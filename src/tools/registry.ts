@@ -136,10 +136,18 @@ export class ToolRegistry {
       try {
         validateParameters(toolConfig.statement, toolConfig.parameters, connectorType);
       } catch (error) {
-        if (connectorType !== "kingbase" || !("statement" in toolConfig)) throw error;
-        // Lazy sources have not revealed their mode yet. Accept either V8
-        // syntax here; the handler revalidates against the connected dialect.
-        validateParameters(toolConfig.statement, toolConfig.parameters, "kingbase-mysql");
+        if (!("statement" in toolConfig)) throw error;
+        // Lazy sources have not revealed their compatibility mode yet.
+        // Runtime validation always uses the connected dialect.
+        if (connectorType === "kingbase") {
+          validateParameters(toolConfig.statement, toolConfig.parameters, "kingbase-mysql");
+        } else if (connectorType === "dm") {
+          try {
+            validateParameters(toolConfig.statement, toolConfig.parameters, "dm-mysql");
+          } catch {
+            validateParameters(toolConfig.statement, toolConfig.parameters, "dm-sqlserver");
+          }
+        } else throw error;
       }
     } catch (error) {
       throw new Error(

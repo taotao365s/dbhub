@@ -191,8 +191,12 @@ export function createCustomToolHandler(toolConfig: ToolConfig) {
 
       // 3. Get connector for the specified source
       const connector = ConnectorManager.getCurrentConnector(toolConfig.source);
-      if (connector.id === "kingbase" && "statement" in toolConfig) {
-        validateParameters(toolConfig.statement, toolConfig.parameters, connector.getSQLDialect?.() ?? connector.id);
+      if ((connector.id === "kingbase" || connector.id === "dm") && "statement" in toolConfig) {
+        validateParameters(
+          toolConfig.statement,
+          toolConfig.parameters,
+          connector.getSQLDialect?.() ?? connector.id
+        );
       }
 
       // 4. Build execute options from the tool's access policy (compiled

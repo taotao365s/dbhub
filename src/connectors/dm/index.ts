@@ -1,9 +1,18 @@
-import type { Socket } from "node:net";
+import {
+  openDMSession,
+  destroyDMSession,
+  readTLSFile,
+  type DMSession,
+  type DMTLSConfig,
+} from "./transport.js";
+import { DMSessionPool } from "./pool.js";
+import { computeHitRatioPct } from "../health-check-utils.js";
 import dm from "dmdb";
 import {
   ConnectorRegistry,
   type Connector,
   type ConnectorType,
+  type SQLDialect,
   type ConnectorConfig,
   type DSNParser,
   type ExecuteOptions,
@@ -12,6 +21,7 @@ import {
   type TableColumn,
   type TableIndex,
   type StoredProcedure,
+  type HealthCheckResult,
 } from "../interface.js";
 import { SafeURL } from "../../utils/safe-url.js";
 import { quoteIdentifier } from "../../utils/identifier-quoter.js";
@@ -24,6 +34,8 @@ import { closeQuietly } from "../../utils/resource-cleanup.js";
 interface DMConnectionConfig {
   connection: dm.ConnectionAttributes;
   schema?: string;
+  tls: DMTLSConfig;
+  poolMax: number;
 }
 
 export class DMDSNParser implements DSNParser {
@@ -45,16 +57,40 @@ export class DMDSNParser implements DSNParser {
       );
     }
     let schema: string | undefined;
+    const params: Record<string, string> = {};
     url.forEachSearchParam((value, key) => {
-      if (key === "schema") {
-        quoteIdentifier(value, "dm");
-        schema = value;
-      } else if (key !== "sslmode" || value !== "disable") {
-        throw new Error(
-          `Unsupported DM DSN option '${key}'. Supported: schema, sslmode=disable. TLS is not implemented.`
-        );
+      if (
+        !["schema", "sslmode", "sslrootcert", "sslcert", "sslkey", "sslservername"].includes(key)
+      ) {
+        throw new Error(`Unsupported DM DSN option '${key}'`);
       }
+      if (key in params) throw new Error(`Duplicate DM DSN option '${key}'`);
+      params[key] = value;
     });
+    if (params.schema !== undefined) {
+      quoteIdentifier(params.schema, "dm");
+      schema = params.schema;
+    }
+    const mode = params.sslmode ?? "disable";
+    if (!["disable", "require", "verify-ca", "verify-full"].includes(mode))
+      throw new Error("Invalid DM sslmode");
+    if (!!params.sslcert !== !!params.sslkey)
+      throw new Error("DM sslcert and sslkey must be supplied together");
+    if (
+      mode === "disable" &&
+      ["sslrootcert", "sslcert", "sslkey", "sslservername"].some((key) => params[key])
+    ) {
+      throw new Error("DM TLS options require sslmode=require, verify-ca or verify-full");
+    }
+    if (mode.startsWith("verify") && !params.sslrootcert)
+      throw new Error("DM verified TLS requires sslrootcert");
+    const tls: DMTLSConfig = {
+      mode: mode as DMTLSConfig["mode"],
+      hostname: params.sslservername ?? url.hostname,
+      ca: readTLSFile(params.sslrootcert),
+      cert: readTLSFile(params.sslcert),
+      key: readTLSFile(params.sslkey),
+    };
     if (
       config?.password ||
       config?.searchPath ||
@@ -66,11 +102,13 @@ export class DMDSNParser implements DSNParser {
         "DM does not support password callbacks, search_path, timezone, charset or collation options"
       );
     }
-    if (config?.poolMaxConnections !== undefined) {
-      throw new Error("DM uses isolated sessions; pool_max_connections is not supported");
-    }
+    const poolMax = config?.poolMaxConnections ?? 4;
+    if (!Number.isInteger(poolMax) || poolMax < 1 || poolMax > 1000)
+      throw new Error("DM pool size must be between 1 and 1000");
     return {
       schema,
+      tls,
+      poolMax,
       connection: {
         connectString: `${url.hostname}:${url.port || 5236}`,
         user: url.username,
@@ -84,16 +122,25 @@ export class DMDSNParser implements DSNParser {
   }
 }
 
-/** DM8 native protocol. Each operation owns its session and transaction. */
+/** DM8 native protocol with bounded, source-local session pooling. */
 export class DMConnector implements Connector {
   id: ConnectorType = "dm";
   name = "DM8";
   dsnParser = new DMDSNParser();
   private sourceId = "default";
   private parsed?: DMConnectionConfig;
+  private pool?: DMSessionPool;
   private defaultSchema = "";
   private readonly = false;
   private queryTimeoutMs = 0;
+  private compatibilityMode = 0;
+  getSQLDialect(): SQLDialect {
+    return this.compatibilityMode === 4
+      ? "dm-mysql"
+      : this.compatibilityMode === 3
+        ? "dm-sqlserver"
+        : "dm";
+  }
 
   getId(): string {
     return this.sourceId;
@@ -106,7 +153,14 @@ export class DMConnector implements Connector {
   }
 
   async connect(dsn: string, initScript?: string, config?: ConnectorConfig): Promise<void> {
+    await this.disconnect();
     this.parsed = await this.dsnParser.parse(dsn, config);
+    const parsed = this.parsed;
+    this.pool = new DMSessionPool({
+      max: parsed.poolMax,
+      waitMs: parsed.connection.connectTimeout ?? 10000,
+      create: () => openDMSession(parsed.connection, parsed.tls),
+    });
     this.readonly = config?.readonly ?? false;
     this.queryTimeoutMs = (config?.queryTimeoutSeconds ?? 0) * 1000;
     try {
@@ -114,6 +168,10 @@ export class DMConnector implements Connector {
         "SELECT SF_GET_SCHEMA_NAME_BY_ID(CURRENT_SCHID()) AS NAME FROM DUAL"
       );
       this.defaultSchema = rows[0].NAME;
+      const mode = await this.query<{ MODE: number }>(
+        "SELECT SF_GET_PARA_VALUE(2, 'COMPATIBLE_MODE') AS MODE FROM DUAL"
+      );
+      this.compatibilityMode = Number(mode[0].MODE);
       if (initScript) await this.executeSQL(initScript, {});
     } catch (error) {
       await this.disconnect();
@@ -122,23 +180,27 @@ export class DMConnector implements Connector {
   }
 
   async disconnect(): Promise<void> {
-    // No idle sockets or pool; an in-flight operation owns and closes its session.
+    this.pool?.close();
+    this.pool = undefined;
     this.parsed = undefined;
     this.defaultSchema = "";
+    this.compatibilityMode = 0;
   }
 
-  private async acquire(): Promise<dm.Connection> {
-    if (!this.parsed) throw new Error("Not connected to DM");
+  private async acquire(): Promise<DMSession> {
+    const parsed = this.parsed,
+      pool = this.pool;
+    if (!parsed || !pool) throw new Error("Not connected to DM");
     try {
-      const connection = await dm.getConnection(this.parsed.connection);
+      const connection = await pool.acquire();
       try {
-        if (this.parsed.schema) {
-          await connection.execute(`SET SCHEMA ${quoteIdentifier(this.parsed.schema, "dm")}`);
+        if (parsed.schema) {
+          await connection.execute(`SET SCHEMA ${quoteIdentifier(parsed.schema, "dm")}`);
           await connection.rollback();
         }
         return connection;
       } catch (error) {
-        await closeQuietly(() => connection.close());
+        pool.release(connection, false);
         throw error;
       }
     } catch (error) {
@@ -164,21 +226,34 @@ export class DMConnector implements Connector {
     options: ExecuteOptions,
     parameters: unknown[] = []
   ): Promise<SQLResult> {
-    const statements = splitProceduralStatements(sql, "dm").filter((statement) =>
-      stripCommentsAndStrings(statement, "dm").trim()
+    const dialect = this.getSQLDialect();
+    const statements = splitProceduralStatements(sql, dialect).filter((statement) =>
+      stripCommentsAndStrings(statement, dialect).trim()
     );
     const readonly = this.readonly || options.readonly;
-    if (readonly && statements.some((statement) => !isReadOnlySQL(statement, "dm"))) {
+    if (readonly && statements.some((statement) => !isReadOnlySQL(statement, dialect))) {
       throw new Error("Read-only mode: statement is not permitted");
     }
-    if (
-      statements.some((statement) =>
-        /^explain\b/i.test(stripCommentsAndStrings(statement, "dm").trim())
-      )
-    ) {
-      // dmdb currently discards the server's printed EXPLAIN output.
-      throw new Error("DM EXPLAIN output is not exposed by dmdb; explain_sql is not supported yet");
+    for (let i = 0; i < statements.length; i++) {
+      const clean = stripCommentsAndStrings(statements[i], dialect).trim();
+      if (/^explain\b/i.test(clean)) {
+        // Accept only one ordinary SELECT/WITH target, never ANALYZE or named plans.
+        const target = statements[i].replace(
+          /^\s*(?:--[^\n]*\n|\/\*[\s\S]*?\*\/\s*)*explain\s+(?:for\s+)?/i,
+          ""
+        );
+        if (
+          !/^(select|with)\b/i.test(stripCommentsAndStrings(target, dialect).trim()) ||
+          !isReadOnlySQL(target, dialect)
+        ) {
+          throw new Error("DM EXPLAIN requires a read-only SELECT or WITH statement");
+        }
+        statements[i] = "EXPLAIN FOR " + target;
+      }
     }
+    const explaining = statements.some((statement) => statement.startsWith("EXPLAIN FOR "));
+    if (explaining && statements.length !== 1)
+      throw new Error("DM EXPLAIN must be a single statement");
     if (
       options.maxRows !== undefined &&
       (!Number.isSafeInteger(options.maxRows) || options.maxRows < 1)
@@ -187,12 +262,14 @@ export class DMConnector implements Connector {
     }
     // Positional binds are consumed once across the entire batch.
     const counts = statements.map(
-      (statement) => (blankCommentsAndStrings(statement, "dm").match(/\?/g) ?? []).length
+      (statement) => (blankCommentsAndStrings(statement, dialect).match(/\?/g) ?? []).length
     );
     if (counts.reduce((sum, count) => sum + count, 0) !== parameters.length) {
       throw new Error("DM parameter count does not match the number of ? placeholders");
     }
     const connection = await this.acquire();
+    const pool = this.pool!;
+    let succeeded = false;
     let aborted = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     // dmdb has no public cancel API. With the pinned driver, destroying this
@@ -200,7 +277,7 @@ export class DMConnector implements Connector {
     // Never return the session to a pool or send ROLLBACK on the dead socket.
     const operation = async (): Promise<SQLResult> => {
       try {
-        if (readonly)
+        if (readonly && !explaining)
           await connection.execute("SET TRANSACTION READ ONLY", [], { autoCommit: false });
         const resultSets: SQLResultSet[] = [];
         let offset = 0;
@@ -257,12 +334,13 @@ export class DMConnector implements Connector {
         }
         if (readonly) await connection.rollback();
         else await connection.commit();
+        succeeded = true;
         return { resultSets };
       } catch (error) {
         if (!aborted) await closeQuietly(() => connection.rollback());
         throw error;
       } finally {
-        if (!aborted) await closeQuietly(() => connection.close());
+        pool.release(connection, succeeded && !!readonly && !aborted);
       }
     };
     try {
@@ -272,8 +350,8 @@ export class DMConnector implements Connector {
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
             aborted = true;
-            const socket = (connection as dm.Connection & { socket: Socket }).socket;
-            socket.destroy();
+            destroyDMSession(connection);
+            pool.release(connection, false);
             reject(
               Object.assign(new Error("DM query execution timed out; its session was closed"), {
                 code: "QUERY_TIMEOUT",
@@ -285,6 +363,55 @@ export class DMConnector implements Connector {
     } finally {
       if (timer) clearTimeout(timer);
     }
+  }
+
+  async getHealthCheck(): Promise<HealthCheckResult> {
+    const result: HealthCheckResult = {};
+    const notes: string[] = [];
+    try {
+      const rows = await this.query<Record<string, unknown>>(`
+        SELECT COUNT(*) AS TOTAL,
+          SUM(CASE WHEN STATE='ACTIVE' THEN 1 ELSE 0 END) AS ACTIVE,
+          SUM(CASE WHEN STATE<>'ACTIVE' AND TRX_ID=0 THEN 1 ELSE 0 END) AS IDLE,
+          SUM(CASE WHEN STATE<>'ACTIVE' AND TRX_ID<>0 THEN 1 ELSE 0 END) AS IDLE_TRX
+        FROM V$SESSIONS WHERE SESS_ID <> SESSID()`);
+      const max = await this.query<{ PARA_VALUE: string }>(
+        "SELECT PARA_VALUE FROM V$DM_INI WHERE PARA_NAME='MAX_SESSIONS'"
+      );
+      result.connections = {
+        total: Number(rows[0].TOTAL),
+        active: Number(rows[0].ACTIVE ?? 0),
+        idle: Number(rows[0].IDLE ?? 0),
+        idleInTransaction: Number(rows[0].IDLE_TRX ?? 0),
+        maxConnections: max[0] ? Number(max[0].PARA_VALUE) : null,
+        longestIdleInTransactionSeconds: null,
+        longestActiveQuerySeconds: null,
+      };
+      notes.push(
+        "DM session durations are unavailable; counts reflect the current user's catalog visibility."
+      );
+    } catch (error) {
+      if (![-551, -550, -2106].includes((error as { errCode?: number }).errCode ?? 0)) throw error;
+      notes.push("DM session metrics unavailable: grant access to V$SESSIONS and V$DM_INI.");
+    }
+    try {
+      const rows = await this.query<{ LOGICAL: string; PHYSICAL: string }>(
+        "SELECT SUM(N_LOGIC_READS) AS LOGICAL, SUM(N_PHY_READS) AS PHYSICAL FROM V$BUFFERPOOL"
+      );
+      // DM's RAT_HIT is logical / (logical + physical), not (logical - physical) / logical.
+      const logical = Number(rows[0]?.LOGICAL ?? 0),
+        physical = Number(rows[0]?.PHYSICAL ?? 0);
+      result.bufferCache = {
+        blocksHit: logical,
+        blocksRead: physical,
+        hitRatioPct: computeHitRatioPct(logical + physical, physical),
+      };
+    } catch (error) {
+      if (![-551, -550, -2106].includes((error as { errCode?: number }).errCode ?? 0)) throw error;
+      notes.push("DM buffer metrics unavailable: grant access to V$BUFFERPOOL.");
+    }
+    if (notes.length) result.notes = notes;
+    return result;
   }
 
   async getSchemas(): Promise<string[]> {

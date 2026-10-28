@@ -54,6 +54,7 @@ describe.skipIf(!process.env.DM_TEST_DSN)("DM8 integration", () => {
 id = "dm_it"
 dsn = ${JSON.stringify(scoped)}
 query_timeout = 5
+pool_max_connections = 2
 [[tools]]
 name = "execute_sql"
 source = "dm_it"
@@ -93,6 +94,45 @@ parameters = [{ name = "id", type = "integer", description = "Item ID" }]
       process.argv = previousArgv;
       if (folder) rmSync(folder, { recursive: true, force: true });
     }
+  });
+
+  it("records the actual server version and compatibility mode", async () => {
+    const mode = (
+      await connector.executeSQL(
+        "SELECT PARA_VALUE FROM V$DM_INI WHERE PARA_NAME='COMPATIBLE_MODE'",
+        { readonly: true }
+      )
+    ).resultSets[0].rows[0].PARA_VALUE;
+    if (process.env.DM_EXPECT_MODE !== undefined)
+      expect(Number(mode)).toBe(Number(process.env.DM_EXPECT_MODE));
+    const version = (await connector.executeSQL("SELECT BANNER FROM V$VERSION", { readonly: true }))
+      .resultSets[0].rows;
+    expect(JSON.stringify(version)).toContain("V8");
+    console.info("DM verified mode:", mode, "version:", JSON.stringify(version));
+  });
+
+  it("scans the active mode's identifiers and custom parameters", async () => {
+    const dialect = connector.getSQLDialect();
+    const quoted =
+      dialect === "dm-mysql"
+        ? "`name;?value`"
+        : dialect === "dm-sqlserver"
+          ? "[name;?value]"
+          : '"name;?value"';
+    const sql = `SELECT CAST(? AS INT) AS ${quoted} FROM DUAL`;
+    const result = await connector.executeSQL(sql, { readonly: true }, [7]);
+    expect(result.resultSets[0].rows).toEqual([{ "name;?value": 7 }]);
+    const handler = createCustomToolHandler({
+      name: "mode_literal",
+      source: "dm_it",
+      description: "Mode-aware binding",
+      statement: sql,
+      readonly: true,
+      parameters: [{ name: "n", type: "integer", description: "Value" }],
+    });
+    const custom = parse(await handler({ n: 8 }, {}));
+    expect(custom.success).toBe(true);
+    expect(custom.data.statements[0].rows).toEqual([{ "name;?value": 8 }]);
   });
 
   it("selects the configured schema and independent source identity", async () => {
@@ -234,7 +274,10 @@ parameters = [{ name = "id", type = "integer", description = "Item ID" }]
     expect(parsed.connection.connectString).toBe("localhost:5236");
     expect(parsed.connection.password).toBe("p@ss");
     await expect(parser.parse("dm://u:p@localhost/database")).rejects.toThrow("schema");
-    await expect(parser.parse("dm://u:p@localhost?sslmode=require")).rejects.toThrow("TLS");
+    expect((await parser.parse("dm://u:p@localhost?sslmode=require")).tls.mode).toBe("require");
+    await expect(parser.parse("dm://u:p@localhost?sslmode=verify-full")).rejects.toThrow(
+      "sslrootcert"
+    );
     await expect(parser.parse("dm://u:p@localhost?loginEncrypt=false")).rejects.toThrow(
       "Unsupported"
     );
@@ -255,7 +298,7 @@ parameters = [{ name = "id", type = "integer", description = "Item ID" }]
   it("recovers with a fresh session after a query timeout", async () => {
     const timed = new DMConnector();
     try {
-      await timed.connect(dsn, undefined, { queryTimeoutSeconds: 1 });
+      await timed.connect(dsn, undefined, { queryTimeoutSeconds: 1, poolMaxConnections: 1 });
       const start = Date.now();
       await expect(
         timed.executeSQL(
@@ -285,6 +328,46 @@ parameters = [{ name = "id", type = "integer", description = "Item ID" }]
       await timed.disconnect();
     }
   }, 15_000);
+  it("reuses read-only sessions, bounds concurrency and discards writable state", async () => {
+    const pooled = new DMConnector();
+    try {
+      await pooled.connect(dsn, undefined, { poolMaxConnections: 1, queryTimeoutSeconds: 3 });
+      const session = async () =>
+        (await pooled.executeSQL("SELECT SESSID() AS ID FROM DUAL", { readonly: true }))
+          .resultSets[0].rows[0].ID;
+      const first = await session();
+      expect(await session()).toBe(first);
+      expect(new Set(await Promise.all(Array.from({ length: 12 }, session))).size).toBe(1);
+      await pooled.executeSQL("SELECT 1 FROM DUAL", {});
+      expect(await session()).not.toBe(first);
+    } finally {
+      await pooled.disconnect();
+    }
+  });
+
+  it("returns actual session and buffer metrics", async () => {
+    const health = await connector.getHealthCheck();
+    expect(health.connections?.maxConnections).toBeGreaterThan(0);
+    expect(health.connections?.total).toBeGreaterThanOrEqual(0);
+    expect(health.bufferCache?.blocksHit).toBeGreaterThanOrEqual(0);
+    expect(health.bufferCache?.hitRatioPct).toBeGreaterThanOrEqual(0);
+    expect(health.bufferCache?.hitRatioPct).toBeLessThanOrEqual(100);
+  });
+
+  it("explains without running target functions and blocks ANALYZE", async () => {
+    const result = await connector.executeSQL("EXPLAIN SELECT WRITE_ITEM() FROM DUAL", {
+      readonly: true,
+    });
+    expect(result.resultSets[0].rows.length).toBeGreaterThan(0);
+    expect(
+      (await connector.executeSQL('SELECT ID FROM "MixedCase" WHERE ID=99', { readonly: true }))
+        .resultSets[0].rows
+    ).toHaveLength(0);
+    await expect(connector.executeSQL("EXPLAIN ANALYZE SELECT 1 FROM DUAL", {})).rejects.toThrow(
+      "EXPLAIN"
+    );
+  });
+
   it("executes real tool handlers including parameterized custom tools", async () => {
     const execute = parse(
       await createExecuteSqlToolHandler("dm_it")(
@@ -316,7 +399,8 @@ parameters = [{ name = "id", type = "integer", description = "Item ID" }]
     const explain = parse(
       await createExplainSqlToolHandler("dm_it")({ sql: "SELECT 1 FROM DUAL" }, {})
     );
-    expect(explain.success).toBe(false);
-    expect(JSON.stringify(explain)).toContain("not supported");
+    expect(explain.success).toBe(true);
+    expect(explain.data.rows.length).toBeGreaterThan(0);
+    expect(explain.data.rows[0]).toHaveProperty("OPERATION");
   });
 });

@@ -74,9 +74,8 @@ PostgreSQL, MySQL, SQL Server, MariaDB, Oracle, KingbaseES, DM8, and SQLite.
 ### DM8
 
 This checkout supports DM8 through the optional native-protocol `dmdb` driver
-(pinned to `1.0.52452`). Tested with the official
-`dm8_20241022_rev244896_x86_rh6_64` image on Apple Silicon via OrbStack's
-`linux/amd64` emulation.
+(pinned to `1.0.52452`). It supports SQL execution, metadata discovery,
+`explain_sql`, session/cache `health_check`, bounded connection pooling, and TLS.
 
 ```toml
 [[sources]]
@@ -84,6 +83,7 @@ id = "dm"
 dsn = "dm://app_user:password@localhost:5236?schema=APP"
 connection_timeout = 10
 query_timeout = 30
+pool_max_connections = 4
 
 [[tools]]
 name = "execute_sql"
@@ -94,59 +94,128 @@ max_rows = 100
 [[tools]]
 name = "search_objects"
 source = "dm"
+
+[[tools]]
+name = "explain_sql"
+source = "dm"
+
+[[tools]]
+name = "health_check"
+source = "dm"
 ```
 
 DM connects to an **instance**, so omit the database path. Select an exact,
 case-sensitive schema using `?schema=APP`; without it the login's current schema
-is used. Percent-encode credentials and schema names in DSNs. Structured TOML
-parameters use `type = "dm"`, `host`, `port` (default `5236`), `user`, and
-`password`; omit `database`. For a non-default schema use the DSN form.
-Individual environment variables support `DB_TYPE=dm` without `DB_NAME`.
+is used. Percent-encode credentials and schema names. Structured TOML parameters
+use `type = "dm"`, `host`, `port` (default `5236`), `user`, and `password`;
+omit `database`. For a non-default schema use the DSN form.
+Environment variables support `DB_TYPE=dm` without `DB_NAME`.
 
 Build this checkout and run `node dist/index.js --config /path/to/dbhub.toml`.
-On Node.js 22, the tested legacy image requires the legacy OpenSSL provider
-for login encryption:
+The tested legacy 2024 image on Node.js 22 needs the process-specific
+`NODE_OPTIONS=--openssl-legacy-provider` for login encryption. DBHub never
+disables login encryption.
 
-```sh
-NODE_OPTIONS=--openssl-legacy-provider node dist/index.js --config /path/to/dbhub.toml
+TLS uses DM's native protocol upgrade, with a minimum of TLS 1.2. Example for
+a server configured with `ENABLE_ENCRYPT=1` (mutual TLS):
+
+```toml
+[[sources]]
+id = "dm_tls"
+dsn = "dm://app_user:password@db.example.com:5236?schema=APP"
+sslmode = "verify-full"
+sslrootcert = "/absolute/path/ca-cert.pem"
+sslcert = "/absolute/path/client-cert.pem"
+sslkey = "/absolute/path/client-key.pem"
+pool_max_connections = 4
 ```
 
-This is a process-specific runtime option; DBHub never disables login encryption.
-Use a least-privilege database user. Readonly tools combine SQL validation with
-a server-side read-only transaction. Each execution uses a fresh session, commits
-successful writable DML batches, and rolls back failed DML batches. DDL follows
-DM's implicit-commit behavior and is not an atomic batch. Session settings and
-temporary objects do not persist between calls; `init_script` is a one-time
-initialization, not a per-session hook.
+The same TLS fields can be placed in the DSN query string. `verify-full`
+validates the CA chain and hostname; `verify-ca` checks the chain only;
+`require` encrypts without authenticating the server certificate.
+Verified modes require `sslrootcert`. Client certificate/key must be supplied
+together when the server requires them. `sslservername` is a DSN-only hostname
+override, useful for a tunnel whose connection address differs from the
+certificate name. TLS failures and plaintext downgrade are rejected **before
+login**. The pinned driver's insecure TLS default is replaced per connection;
+no global TLS or driver prototype is patched. SSL authentication-only mode
+(`ENABLE_ENCRYPT=2`) and TLCP are not supported.
 
-Custom tool parameters use `?`, consumed left-to-right across a batch.
-BIGINT, DECIMAL/NUMBER, and date/time values are returned as strings to preserve
-precision; CLOBs are strings and BLOBs are buffers. Catalog names retain their
-exact case. Table/view/column/index/comment and standalone routine discovery
-are supported. Row caps fetch one extra row to report truncation accurately.
+Each source has an independent pool (default maximum 4 connections, configurable
+with `pool_max_connections`, range 1–1000). Acquisition, including queue wait, is
+bounded by `connection_timeout`; at most 500 requests may wait. Successful
+read-only sessions are rolled back and reused. Writable, failed and timed-out
+sessions are discarded; this prevents write/session settings from leaking
+to later calls. Disconnect rejects waiters and closes active/idle sockets.
+Session settings and temporary objects are not a cross-call contract;
+`init_script` runs once, not on every pooled session.
 
-`query_timeout` bounds execution of the entire batch after connection setup,
-including result fetching and transaction completion. On expiry, DBHub destroys
-that operation's private socket; later calls use fresh sessions. Server cleanup is
-asynchronous: the tested query disappeared several seconds after the client
-deadline, so this is not a strict server-side execution deadline. This cancellation
-and deferred per-column conversion depend on the pinned driver's behavior and
-are covered by the real-instance tests. Timeout does not prove a preceding write
-failed to commit, so do not blindly retry writes.
+Readonly SQL combines validation with server-side read-only transactions.
+Successful writable DML batches commit; failed batches roll back. DDL follows
+DM's implicit commits and cannot be made atomic by DBHub. Custom parameters
+use `?`, consumed left-to-right across a batch. BIGINT, DECIMAL/NUMBER and
+date/time values are strings, preserving precision; CLOBs are strings and
+BLOBs are buffers. Catalog names retain exact case. Row caps fetch one extra
+row to identify truncation.
 
-Current limitations: TLS, connection pooling, `health_check`, and `explain_sql`
-are not implemented. The driver does not expose DM's printed EXPLAIN output;
-DBHub reports an explicit unsupported error. Only `schema` and
-`sslmode=disable` DSN options are accepted. Other DM versions and compatibility
-settings have not been verified.
+`explain_sql` uses **EXPLAIN FOR** and returns structured plan rows. Only a
+single read-only SELECT/WITH target is accepted; ANALYZE and named-plan forms
+are rejected. Plan generation needs a normal transaction for its internal
+plan data; DBHub rolls it back and never executes the target query.
+`health_check` reports visible sessions, MAX_SESSIONS, and buffer hit/read
+counters. Missing catalog privileges produce explicit notes per unavailable
+section. Session durations are returned as null, not inferred from idle times.
 
-Real-instance integration tests create and remove a unique test schema:
+`query_timeout` bounds the whole execution after connection setup, including
+fetching and transaction completion. On expiry the private socket is destroyed
+and discarded. Server cleanup is asynchronous, so this is not a strict
+server-side deadline. A timeout does not prove a preceding write failed to
+commit; do not blindly retry writes. The transport hooks and deferred
+per-column conversion depend on the pinned driver and are covered by real
+integration tests.
+
+Verified on macOS/OrbStack with these official images:
+
+| Image | Server build reported by V$VERSION | Architecture |
+| --- | --- | --- |
+| `dm8_single:dm8_20241022_rev244896_x86_rh6_64` | `03134284294-20241009-244896-20119` | amd64, emulated |
+| `dm8:dm8_20250924_rev288894_HWarm_kylin10_64` | `03134284368-20250821-288894-20149` | arm64, native |
+
+Both builds support `COMPATIBLE_MODE` values 0–7: native (0), SQL92 (1),
+Oracle (2, tested with FLOAT_MODE=1), SQL Server (3), MySQL (4), DM6 (5),
+Teradata (6), and PostgreSQL (7). The matrix checks actual parameter values
+after restarting each isolated instance and runs the same connector/tool suite.
+Mode 5 means **DM8's DM6 compatibility setting**, not a tested DM6 server.
+Other server builds, DM7, and newer mode values are not implied by this matrix.
+
+Validation covered 20 connector/tool checks in each of the 16 version/mode
+combinations (320 passing checks), plus four pool lifecycle checks on each
+build. Seven TLS checks ran against the 2024 amd64 server, including invalid
+CA/hostname and plaintext-downgrade rejection. Built MCP smoke tests passed
+against the 2024 server over TLS in mode 3 and the 2025 ARM server in mode 4.
+
+DBHub detects the active mode on connection. Mode 4 enables backtick identifiers;
+mode 3 enables bracket identifiers. All modes keep native DM `?` bindings.
+DM's MySQL mode does not imply MySQL's `#` comments, and PostgreSQL mode does
+not imply PostgreSQL's dollar-quoted strings. Tests cover common operations and
+mode-aware identifiers/binding; this is not certification of every vendor SQL
+feature or every DM parameter combination.
+
+Real-instance tests create/remove a unique schema. Supply `DM_TEST_DSN` for a
+disposable instance/user with schema DDL rights; optionally use
+`DM_EXPECT_MODE` to assert the active compatibility parameter:
 
 ```sh
-# DM_TEST_DSN must identify a disposable test instance/user with schema DDL rights.
-NODE_OPTIONS=--openssl-legacy-provider pnpm exec vitest run --project integration src/connectors/__tests__/dm.integration.test.ts
-# After building: read-only checks through the built MCP stdio service.
+NODE_OPTIONS=--openssl-legacy-provider pnpm exec vitest run --project integration src/connectors/__tests__/dm.integration.test.ts src/connectors/__tests__/dm-pool.integration.test.ts
 NODE_OPTIONS=--openssl-legacy-provider node scripts/smoke-test-dm.mjs
+```
+
+TLS tests use `DM_TLS_TEST_DSN` (verify-full plus certificate paths),
+`DM_TLS_WRONG_CA` (an unrelated CA certificate), and
+`DM_PLAINTEXT_TEST_DSN` (a separate plaintext instance):
+
+```sh
+NODE_OPTIONS=--openssl-legacy-provider pnpm exec vitest run --project integration src/connectors/__tests__/dm-tls.integration.test.ts
 ```
 
 ### KingbaseES V8

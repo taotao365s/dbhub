@@ -247,6 +247,8 @@ const dialectScanners: Record<SQLDialect, TokenScanner> = {
   sqlserver: scanTokenSQLServer,
   oracle: scanTokenOracle,
   dm: scanTokenOracle,
+  "dm-mysql": (sql, i) => scanBacktickQuotedIdentifier(sql, i) ?? scanTokenOracle(sql, i),
+  "dm-sqlserver": (sql, i) => scanBracketQuotedIdentifier(sql, i) ?? scanTokenOracle(sql, i),
 };
 
 function getScanner(dialect?: SQLDialect): TokenScanner {

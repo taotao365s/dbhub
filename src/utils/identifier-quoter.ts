@@ -38,6 +38,8 @@ export function quoteIdentifier(identifier: string, dbType: SQLDialect): string 
     case "sqlite":
     case "oracle":
     case "dm":
+    case "dm-mysql":
+    case "dm-sqlserver":
       // PostgreSQL, SQLite and Oracle use double quotes
       // Escape existing double quotes by doubling them
       return `"${identifier.replace(/"/g, '""')}"`;

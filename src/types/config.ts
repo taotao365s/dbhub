@@ -45,9 +45,9 @@ export interface ConnectionParams {
   aws_profile?: string; // Named AWS shared-config profile for RDS IAM auth
   instanceName?: string; // SQL Server named instance support
   sslmode?: "disable" | "require" | "verify-ca" | "verify-full"; // SSL mode for network databases (not SQLite; verify-ca: PostgreSQL only; verify-full: PostgreSQL, SQL Server, Oracle)
-  sslrootcert?: string; // CA certificate path (PostgreSQL only; requires verify-ca or verify-full)
-  sslcert?: string; // PEM client certificate path for client certificate authentication (PostgreSQL only; requires sslkey and sslmode require/verify-ca/verify-full)
-  sslkey?: string; // PEM private key path for sslcert (PostgreSQL only; unencrypted)
+  sslrootcert?: string; // CA certificate path (PostgreSQL, KingbaseES, DM; requires verify-ca or verify-full)
+  sslcert?: string; // PEM client certificate path for client certificate authentication (PostgreSQL, KingbaseES, DM; requires sslkey and sslmode require/verify-ca/verify-full)
+  sslkey?: string; // PEM private key path for sslcert (PostgreSQL, KingbaseES, DM; unencrypted)
   // SQL Server authentication options
   authentication?: "ntlm" | "azure-active-directory-access-token";
   domain?: string; // Required for NTLM authentication
@@ -62,7 +62,7 @@ export interface SourceConfig extends ConnectionParams, SSHConfig {
   dsn?: string;
   connection_timeout?: number; // Connection timeout in seconds
   query_timeout?: number; // Query timeout in seconds (all but SQLite). PostgreSQL/MySQL/MariaDB enforce it on the server, with a client-side fallback (see utils/query-timeout.ts)
-  pool_max_connections?: number; // Maximum PostgreSQL connections per source (1-1000)
+  pool_max_connections?: number; // Maximum PostgreSQL, KingbaseES or DM connections per source (1-1000)
   init_script?: string; // Optional SQL script to run on connection (for demo mode or initialization)
   lazy?: boolean; // Defer connection until first query (default: false)
   search_path?: string; // Comma-separated list of schemas for PostgreSQL search_path (e.g., "myschema,public")

@@ -8,6 +8,13 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 const dsn = process.env.DM_TEST_DSN;
 if (!dsn) throw new Error("Set DM_TEST_DSN to a DM8 test instance");
+const alias =
+  process.env.DM_EXPECT_MODE === "4"
+    ? "`N;?value`"
+    : process.env.DM_EXPECT_MODE === "3"
+      ? "[N;?value]"
+      : '"N;?value"';
+const customSQL = `SELECT CAST(? AS INT) AS ${alias} FROM DUAL`;
 const folder = mkdtempSync(join(tmpdir(), "dbhub-dm-mcp-"));
 const config = join(folder, "dbhub.toml");
 writeFileSync(
@@ -15,7 +22,9 @@ writeFileSync(
   `[[sources]]
 id = "default"
 dsn = ${JSON.stringify(dsn)}
+lazy = true
 query_timeout = 5
+pool_max_connections = 2
 [[tools]]
 name = "execute_sql"
 source = "default"
@@ -28,10 +37,13 @@ source = "default"
 name = "explain_sql"
 source = "default"
 [[tools]]
+name = "health_check"
+source = "default"
+[[tools]]
 name = "lookup_literal"
 source = "default"
 description = "Verify native parameter binding"
-statement = "SELECT CAST(? AS INT) AS N FROM DUAL"
+statement = ${JSON.stringify(customSQL)}
 readonly = true
 parameters = [{name = "value", type = "integer", description = "Value"}]
 `,
@@ -73,14 +85,18 @@ try {
   assert.equal(blocked.code, "READONLY_VIOLATION");
   const custom = await call("lookup_literal", { value: 42 });
   assert.equal(custom.success, true, custom.error);
-  assert.equal(custom.data.statements[0].rows[0].N, 42);
+  assert.equal(custom.data.statements[0].rows[0]["N;?value"], 42);
   const schemas = await call("search_objects", { object_type: "schema", detail_level: "names" });
   assert.equal(schemas.success, true, schemas.error);
   const explain = await call("explain_sql", { sql: "SELECT 1 FROM DUAL" });
-  assert.equal(explain.success, false);
-  assert.ok(JSON.stringify(explain).includes("not supported"));
+  assert.equal(explain.success, true, explain.error);
+  assert.ok(explain.data.rows.length > 0);
+  const health = await call("health_check", {});
+  assert.equal(health.success, true, health.error);
+  assert.ok(health.data.buffer_cache);
+  assert.ok("hit_ratio_pct" in health.data.buffer_cache);
   console.log(
-    "PASS DM8 built MCP: startup, discovery, bindings, precision, row cap, readonly, explicit EXPLAIN limitation"
+    "PASS DM8 built MCP: startup, discovery, bindings, precision, row cap, readonly, EXPLAIN, health_check, pooled connections"
   );
 } finally {
   await client.close();

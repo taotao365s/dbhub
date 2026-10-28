@@ -543,9 +543,9 @@ function validateSourceConfig(source: SourceConfig, configPath: string): void {
   }
 
   if (source.pool_max_connections !== undefined) {
-    if (source.type !== "postgres" && source.type !== "kingbase") {
+    if (source.type !== "postgres" && source.type !== "kingbase" && source.type !== "dm") {
       throw new Error(
-        `Configuration file ${configPath}: source '${source.id}' has 'pool_max_connections' but it is only supported for PostgreSQL and KingbaseES sources.`
+        `Configuration file ${configPath}: source '${source.id}' has 'pool_max_connections' but it is only supported for PostgreSQL, KingbaseES and DM sources.`
       );
     }
     if (
@@ -607,6 +607,7 @@ function validateSourceConfig(source: SourceConfig, configPath: string): void {
     const verifyModesByType: Record<string, string[]> = {
       postgres: ["verify-ca", "verify-full"],
       kingbase: ["verify-ca", "verify-full"],
+      dm: ["verify-ca", "verify-full"],
       sqlserver: ["verify-full"],
       oracle: ["verify-full"],
     };
@@ -633,12 +634,12 @@ function validateSourceConfig(source: SourceConfig, configPath: string): void {
 
   // Validate sslrootcert if provided
   if (source.sslrootcert !== undefined) {
-    // Only the PostgreSQL connector consumes sslrootcert. Rejecting it
+    // PostgreSQL, KingbaseES and DM consume sslrootcert. Rejecting it
     // elsewhere keeps a trust anchor from being silently ignored (Oracle
     // verify-full validates against the system trust store / wallet).
-    if (source.type !== "postgres" && source.type !== "kingbase") {
+    if (source.type !== "postgres" && source.type !== "kingbase" && source.type !== "dm") {
       throw new Error(
-        `Configuration file ${configPath}: source '${source.id}' has sslrootcert but it is only supported for PostgreSQL and KingbaseES.`
+        `Configuration file ${configPath}: source '${source.id}' has sslrootcert but it is only supported for PostgreSQL, KingbaseES and DM.`
       );
     }
     if (source.sslmode !== "verify-ca" && source.sslmode !== "verify-full") {
@@ -653,10 +654,10 @@ function validateSourceConfig(source: SourceConfig, configPath: string): void {
 
   // Validate client certificate authentication (sslcert + sslkey)
   if (source.sslcert !== undefined || source.sslkey !== undefined) {
-    // Only the PostgreSQL connector presents a client certificate.
-    if (source.type !== "postgres" && source.type !== "kingbase") {
+    // PostgreSQL, KingbaseES and DM can present a client certificate.
+    if (source.type !== "postgres" && source.type !== "kingbase" && source.type !== "dm") {
       throw new Error(
-        `Configuration file ${configPath}: source '${source.id}' has sslcert/sslkey but they are only supported for PostgreSQL and KingbaseES.`
+        `Configuration file ${configPath}: source '${source.id}' has sslcert/sslkey but they are only supported for PostgreSQL, KingbaseES and DM.`
       );
     }
     // A TLS handshake needs both the certificate and its private key.
@@ -1064,7 +1065,7 @@ function mergeSourceFieldsIntoDSN(dsn: string, source: SourceConfig): string {
  * (disable or an unset sslmode is rejected by validation).
  */
 function postgresSslFileParams(source: SourceConfig): Array<{ key: string; param: string }> {
-  if (source.type !== "postgres" && source.type !== "kingbase") {
+  if (source.type !== "postgres" && source.type !== "kingbase" && source.type !== "dm") {
     return [];
   }
   const params: Array<{ key: string; param: string }> = [];

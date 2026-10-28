@@ -9,6 +9,8 @@ import { stripCommentsAndStrings } from "./sql-parser.js";
 export const allowedKeywords: Record<SQLDialect, string[]> = {
   postgres: ["select", "with", "explain", "show"],
   dm: ["select", "with", "explain"],
+  "dm-mysql": ["select", "with", "explain"],
+  "dm-sqlserver": ["select", "with", "explain"],
   kingbase: ["select", "with", "explain", "show"],
   "kingbase-mysql": ["select", "with", "explain", "show", "describe", "desc"],
   mysql: ["select", "with", "explain", "show", "describe", "desc"],
@@ -189,9 +191,30 @@ const escapeHatchCallSuffix: Partial<Record<SQLDialect, string>> = {
 };
 const DEFAULT_CALL_SUFFIX = "\\s*\\(";
 
-escapeHatchFunctionKeywords.dm = [...escapeHatchFunctionKeywords.oracle!, "sf_read_file", "sf_write_file", "sf_exec", "sp_set_para_value", "sp_set_para_double_value", "sp_set_para_string_value"];
+escapeHatchFunctionKeywords.dm = [
+  ...escapeHatchFunctionKeywords.oracle!,
+  "sf_read_file",
+  "sf_write_file",
+  "sf_exec",
+  "sf_set_session_para_value",
+  "sf_set_session_para_double_value",
+  "sf_set_session_para_string_value",
+  "sp_set_para_value",
+  "sp_set_para_double_value",
+  "sp_set_para_string_value",
+];
 escapeHatchCallSuffix.dm = escapeHatchCallSuffix.kingbase;
-escapeHatchFunctionKeywords["kingbase-mysql"] = [...escapeHatchFunctionKeywords.kingbase!, "load_file", "get_lock", "release_lock", "release_all_locks"];
+for (const dialect of ["dm-mysql", "dm-sqlserver"] as const) {
+  escapeHatchFunctionKeywords[dialect] = escapeHatchFunctionKeywords.dm;
+  escapeHatchCallSuffix[dialect] = escapeHatchCallSuffix.dm;
+}
+escapeHatchFunctionKeywords["kingbase-mysql"] = [
+  ...escapeHatchFunctionKeywords.kingbase!,
+  "load_file",
+  "get_lock",
+  "release_lock",
+  "release_all_locks",
+];
 escapeHatchCallSuffix["kingbase-mysql"] = escapeHatchCallSuffix.kingbase;
 
 const escapeHatchFunctionPatterns: Partial<Record<SQLDialect, RegExp>> = Object.fromEntries(
@@ -229,6 +252,8 @@ const mutatingPatternSqlServer = new RegExp(
 const mutatingPatterns: Record<SQLDialect, RegExp> = {
   postgres: mutatingPattern,
   dm: mutatingPattern,
+  "dm-mysql": mutatingPattern,
+  "dm-sqlserver": mutatingPattern,
   kingbase: mutatingPattern,
   "kingbase-mysql": mutatingPatternWithReplace,
   mysql: mutatingPatternWithReplace,

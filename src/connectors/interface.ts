@@ -4,7 +4,7 @@
 export type ConnectorType = "postgres" | "mysql" | "mariadb" | "sqlite" | "sqlserver" | "oracle" | "kingbase" | "dm";
 
 /** SQL syntax may differ from the connection protocol (Kingbase compatibility modes). */
-export type SQLDialect = ConnectorType | "kingbase-mysql";
+export type SQLDialect = ConnectorType | "kingbase-mysql" | "dm-mysql" | "dm-sqlserver";
 
 /**
  * Database Connector Interface
@@ -147,7 +147,7 @@ export interface ConnectorConfig {
   connectionTimeoutSeconds?: number;
   /** Query timeout in seconds (PostgreSQL, MySQL, MariaDB, SQL Server) */
   queryTimeoutSeconds?: number;
-  /** Maximum connections in a PostgreSQL source pool */
+  /** Maximum connections in a PostgreSQL, KingbaseES or DM source pool */
   poolMaxConnections?: number;
   /**
    * Read-only mode for SDK-level enforcement (PostgreSQL, SQLite)
