@@ -12,6 +12,7 @@ import { stripCommentsAndStrings } from "./sql-parser.js";
  */
 export const PARAMETER_STYLES = {
   "kingbase-mysql": "numbered", // The wire protocol still binds $1, not ?.
+  dm: "positional", // ?, ?, ?
   kingbase: "numbered", // $1, $2, $3
   postgres: "numbered", // $1, $2, $3
   mysql: "positional", // ?, ?, ?

@@ -8,6 +8,7 @@ import { stripCommentsAndStrings } from "./sql-parser.js";
  */
 export const allowedKeywords: Record<SQLDialect, string[]> = {
   postgres: ["select", "with", "explain", "show"],
+  dm: ["select", "with", "explain"],
   kingbase: ["select", "with", "explain", "show"],
   "kingbase-mysql": ["select", "with", "explain", "show", "describe", "desc"],
   mysql: ["select", "with", "explain", "show", "describe", "desc"],
@@ -188,6 +189,8 @@ const escapeHatchCallSuffix: Partial<Record<SQLDialect, string>> = {
 };
 const DEFAULT_CALL_SUFFIX = "\\s*\\(";
 
+escapeHatchFunctionKeywords.dm = [...escapeHatchFunctionKeywords.oracle!, "sf_read_file", "sf_write_file", "sf_exec", "sp_set_para_value", "sp_set_para_double_value", "sp_set_para_string_value"];
+escapeHatchCallSuffix.dm = escapeHatchCallSuffix.kingbase;
 escapeHatchFunctionKeywords["kingbase-mysql"] = [...escapeHatchFunctionKeywords.kingbase!, "load_file", "get_lock", "release_lock", "release_all_locks"];
 escapeHatchCallSuffix["kingbase-mysql"] = escapeHatchCallSuffix.kingbase;
 
@@ -225,6 +228,7 @@ const mutatingPatternSqlServer = new RegExp(
 /** Per-dialect mutating keyword pattern */
 const mutatingPatterns: Record<SQLDialect, RegExp> = {
   postgres: mutatingPattern,
+  dm: mutatingPattern,
   kingbase: mutatingPattern,
   "kingbase-mysql": mutatingPatternWithReplace,
   mysql: mutatingPatternWithReplace,

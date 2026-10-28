@@ -43,7 +43,7 @@
 DBHub is a minimal MCP server: token-efficient, zero-dependency, and just two tools by default with opt-in extras. This lightweight gateway allows MCP-compatible clients to connect to and explore different databases:
 
 - **Minimal**: Zero dependency, token efficient with a minimal set of MCP tools to maximize context window
-- **Multi-Database**: PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, KingbaseES, and SQLite through a single interface
+- **Multi-Database**: PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, KingbaseES, DM8, and SQLite through a single interface
 - **Multi-Connection**: Connect to multiple databases simultaneously with TOML configuration
 - **Guardrails**: Read-only mode, row limiting, and query timeout to prevent runaway operations
 - **Secure Access**: SSH tunneling and SSL/TLS encryption
@@ -69,7 +69,85 @@ DBHub loads just 2 tools by default at **1.4k tokens** — 13-14x fewer than alt
 
 ## Supported Databases
 
-PostgreSQL, MySQL, SQL Server, MariaDB, Oracle, KingbaseES, and SQLite.
+PostgreSQL, MySQL, SQL Server, MariaDB, Oracle, KingbaseES, DM8, and SQLite.
+
+### DM8
+
+This checkout supports DM8 through the optional native-protocol `dmdb` driver
+(pinned to `1.0.52452`). Tested with the official
+`dm8_20241022_rev244896_x86_rh6_64` image on Apple Silicon via OrbStack's
+`linux/amd64` emulation.
+
+```toml
+[[sources]]
+id = "dm"
+dsn = "dm://app_user:password@localhost:5236?schema=APP"
+connection_timeout = 10
+query_timeout = 30
+
+[[tools]]
+name = "execute_sql"
+source = "dm"
+readonly = true
+max_rows = 100
+
+[[tools]]
+name = "search_objects"
+source = "dm"
+```
+
+DM connects to an **instance**, so omit the database path. Select an exact,
+case-sensitive schema using `?schema=APP`; without it the login's current schema
+is used. Percent-encode credentials and schema names in DSNs. Structured TOML
+parameters use `type = "dm"`, `host`, `port` (default `5236`), `user`, and
+`password`; omit `database`. For a non-default schema use the DSN form.
+Individual environment variables support `DB_TYPE=dm` without `DB_NAME`.
+
+Build this checkout and run `node dist/index.js --config /path/to/dbhub.toml`.
+On Node.js 22, the tested legacy image requires the legacy OpenSSL provider
+for login encryption:
+
+```sh
+NODE_OPTIONS=--openssl-legacy-provider node dist/index.js --config /path/to/dbhub.toml
+```
+
+This is a process-specific runtime option; DBHub never disables login encryption.
+Use a least-privilege database user. Readonly tools combine SQL validation with
+a server-side read-only transaction. Each execution uses a fresh session, commits
+successful writable DML batches, and rolls back failed DML batches. DDL follows
+DM's implicit-commit behavior and is not an atomic batch. Session settings and
+temporary objects do not persist between calls; `init_script` is a one-time
+initialization, not a per-session hook.
+
+Custom tool parameters use `?`, consumed left-to-right across a batch.
+BIGINT, DECIMAL/NUMBER, and date/time values are returned as strings to preserve
+precision; CLOBs are strings and BLOBs are buffers. Catalog names retain their
+exact case. Table/view/column/index/comment and standalone routine discovery
+are supported. Row caps fetch one extra row to report truncation accurately.
+
+`query_timeout` bounds execution of the entire batch after connection setup,
+including result fetching and transaction completion. On expiry, DBHub destroys
+that operation's private socket; later calls use fresh sessions. Server cleanup is
+asynchronous: the tested query disappeared several seconds after the client
+deadline, so this is not a strict server-side execution deadline. This cancellation
+and deferred per-column conversion depend on the pinned driver's behavior and
+are covered by the real-instance tests. Timeout does not prove a preceding write
+failed to commit, so do not blindly retry writes.
+
+Current limitations: TLS, connection pooling, `health_check`, and `explain_sql`
+are not implemented. The driver does not expose DM's printed EXPLAIN output;
+DBHub reports an explicit unsupported error. Only `schema` and
+`sslmode=disable` DSN options are accepted. Other DM versions and compatibility
+settings have not been verified.
+
+Real-instance integration tests create and remove a unique test schema:
+
+```sh
+# DM_TEST_DSN must identify a disposable test instance/user with schema DDL rights.
+NODE_OPTIONS=--openssl-legacy-provider pnpm exec vitest run --project integration src/connectors/__tests__/dm.integration.test.ts
+# After building: read-only checks through the built MCP stdio service.
+NODE_OPTIONS=--openssl-legacy-provider node scripts/smoke-test-dm.mjs
+```
 
 ### KingbaseES V8
 

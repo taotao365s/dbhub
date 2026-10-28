@@ -182,13 +182,13 @@ export function buildDSNFromEnvParams(): { dsn: string; source: string } | null 
     }
   } else {
     // For other databases, require all essential parameters
-    if (!dbType || !dbHost || !dbUser || !dbPassword || !dbName) {
+    if (!dbType || !dbHost || !dbUser || !dbPassword || (!dbName && dbType.toLowerCase() !== "dm")) {
       return null;
     }
   }
 
   // Validate supported database types
-  const supportedTypes = ['postgres', 'postgresql', 'mysql', 'mariadb', 'sqlserver', 'sqlite', 'oracle', 'kingbase'];
+  const supportedTypes = ['postgres', 'postgresql', 'mysql', 'mariadb', 'sqlserver', 'sqlite', 'oracle', 'kingbase', 'dm'];
   if (!supportedTypes.includes(dbType.toLowerCase())) {
     throw new Error(`Unsupported DB_TYPE: ${dbType}. Supported types: ${supportedTypes.join(', ')}`);
   }
@@ -207,6 +207,9 @@ export function buildDSNFromEnvParams(): { dsn: string; source: string } | null 
         break;
       case 'sqlserver':
         port = '1433';
+        break;
+      case 'dm':
+        port = '5236';
         break;
       case 'kingbase':
         port = '54321';
@@ -231,7 +234,7 @@ export function buildDSNFromEnvParams(): { dsn: string; source: string } | null 
   const dbNameStr: string = dbName as string;
   const encodedUser = encodeURIComponent(user);
   const encodedPassword = encodeURIComponent(password);
-  const encodedDbName = encodeURIComponent(dbNameStr);
+  const encodedDbName = encodeURIComponent(dbNameStr ?? "");
 
   // Construct DSN
   const protocol = dbType.toLowerCase() === 'postgresql' ? 'postgres' : dbType.toLowerCase();
@@ -777,7 +780,7 @@ export async function resolveSourceConfigs(): Promise<{ sources: SourceConfig[];
     const protocol = dsnUrl.protocol.replace(':', '');
 
     // Map protocol to database type
-    let dbType: "postgres" | "mysql" | "mariadb" | "sqlserver" | "sqlite" | "oracle" | "kingbase";
+    let dbType: "postgres" | "mysql" | "mariadb" | "sqlserver" | "sqlite" | "oracle" | "kingbase" | "dm";
     if (protocol === 'postgresql' || protocol === 'postgres') {
       dbType = 'postgres';
     } else if (protocol === 'mysql') {
@@ -788,6 +791,8 @@ export async function resolveSourceConfigs(): Promise<{ sources: SourceConfig[];
       dbType = 'sqlserver';
     } else if (protocol === 'sqlite') {
       dbType = 'sqlite';
+    } else if (protocol === 'dm') {
+      dbType = 'dm';
     } else if (protocol === 'kingbase') {
       dbType = 'kingbase';
     } else if (protocol === 'oracle') {

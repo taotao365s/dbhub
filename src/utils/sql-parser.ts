@@ -246,6 +246,7 @@ const dialectScanners: Record<SQLDialect, TokenScanner> = {
   sqlite: scanTokenSQLite,
   sqlserver: scanTokenSQLServer,
   oracle: scanTokenOracle,
+  dm: scanTokenOracle,
 };
 
 function getScanner(dialect?: SQLDialect): TokenScanner {

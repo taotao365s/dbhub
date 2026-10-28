@@ -204,6 +204,7 @@ export function getDatabaseTypeFromDSN(dsn: string): ConnectorType | undefined {
 function protocolToConnectorType(protocol: string): ConnectorType | undefined {
   const mapping: Record<string, ConnectorType> = {
     'postgres': 'postgres',
+    'dm': 'dm',
     'kingbase': 'kingbase',
     'postgresql': 'postgres',
     'mysql': 'mysql',
@@ -223,6 +224,7 @@ function protocolToConnectorType(protocol: string): ConnectorType | undefined {
 export function getDefaultPortForType(type: ConnectorType): number | undefined {
   const ports: Record<ConnectorType, number | undefined> = {
     'postgres': 5432,
+    'dm': 5236,
     'kingbase': 54321,
     'mysql': 3306,
     'mariadb': 3306,

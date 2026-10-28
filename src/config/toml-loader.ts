@@ -449,7 +449,7 @@ function validateSourceConfig(source: SourceConfig, configPath: string): void {
 
   // Validate type if provided
   if (source.type) {
-    const validTypes = ["postgres", "mysql", "mariadb", "sqlserver", "sqlite", "oracle", "kingbase"];
+    const validTypes = ["postgres", "mysql", "mariadb", "sqlserver", "sqlite", "oracle", "kingbase", "dm"];
     if (!validTypes.includes(source.type)) {
       throw new Error(
         `Configuration file ${configPath}: source '${source.id}' has invalid type '${source.type}'. ` +
@@ -1120,7 +1120,7 @@ export function buildDSNFromSource(source: SourceConfig): string {
   const passwordRequired =
     source.authentication !== "azure-active-directory-access-token" &&
     !isAwsIamPasswordless;
-  if (!source.host || !source.user || !source.database) {
+  if (!source.host || !source.user || (!source.database && source.type !== "dm")) {
     throw new Error(
       `Source '${source.id}': missing required connection parameters. ` +
         `Required: type, host, user, database`
@@ -1144,7 +1144,7 @@ export function buildDSNFromSource(source: SourceConfig): string {
   // Encode credentials
   const encodedUser = encodeURIComponent(source.user);
   const encodedPassword = source.password ? encodeURIComponent(source.password) : "";
-  const encodedDatabase = encodeURIComponent(source.database);
+  const encodedDatabase = encodeURIComponent(source.database ?? "");
 
   // Build base DSN
   let dsn = `${source.type}://${encodedUser}:${encodedPassword}@${source.host}:${port}/${encodedDatabase}`;

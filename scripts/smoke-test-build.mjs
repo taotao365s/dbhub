@@ -18,7 +18,7 @@ const files = await readdir(distDir);
 const connectorFiles = files.filter(
   (f) =>
     f.endsWith(".js") &&
-    /^(postgres|kingbase|mysql|mariadb|sqlite|sqlserver|demo-loader)-/.test(f)
+    /^(postgres|kingbase|dm|mysql|mariadb|sqlite|sqlserver|demo-loader)-/.test(f)
 );
 
 if (connectorFiles.length === 0) {

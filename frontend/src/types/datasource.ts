@@ -1,4 +1,4 @@
-export type DatabaseType = 'postgres' | 'mysql' | 'mariadb' | 'sqlserver' | 'sqlite' | 'oracle' | 'kingbase';
+export type DatabaseType = 'postgres' | 'mysql' | 'mariadb' | 'sqlserver' | 'sqlite' | 'oracle' | 'kingbase' | 'dm';
 
 export interface SSHTunnel {
   enabled: boolean;

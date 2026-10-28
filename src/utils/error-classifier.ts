@@ -32,10 +32,12 @@ const NETWORK_CODES = new Set([
 const NETWORK_CODES_BY_TYPE: Partial<Record<ConnectorType, ReadonlySet<string>>> = {
   // NJS-503: "connection to host ... could not be established" (Thin mode)
   oracle: new Set(["NJS-503"]),
+  dm: new Set(["6001", "20010"]),
 };
 
 // Per-connector authentication failure signals. Keyed by code or errno.
 const AUTH_CODES: Record<ConnectorType, ReadonlyArray<string | number>> = {
+  dm: [-2501],
   postgres: ["28P01", "28000"],
   kingbase: ["28P01", "28000"],
   mysql: ["ER_ACCESS_DENIED_ERROR", 1045, 1698],
@@ -82,7 +84,7 @@ export function classifyConnectionError(
     return { code: "TUNNEL_FAILED", message: tunnelMessage(sourceId) };
   }
 
-  const code = err.code;
+  const code = err.code ?? (connectorType === "dm" ? String(err.errCode) : undefined);
   if (
     typeof code === "string" &&
     (NETWORK_CODES.has(code) || NETWORK_CODES_BY_TYPE[connectorType]?.has(code))
@@ -91,7 +93,7 @@ export function classifyConnectionError(
   }
 
   const authCodes = AUTH_CODES[connectorType];
-  const errno = err.errno;
+  const errno = err.errno ?? (connectorType === "dm" ? err.errCode : undefined);
   if (
     (typeof code === "string" && authCodes.includes(code)) ||
     (typeof errno === "number" && authCodes.includes(errno))

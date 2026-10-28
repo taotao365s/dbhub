@@ -34,7 +34,7 @@ export interface SSHConfig {
  * Database connection parameters (alternative to DSN)
  */
 export interface ConnectionParams {
-  type: "postgres" | "mysql" | "mariadb" | "sqlserver" | "sqlite" | "oracle" | "kingbase";
+  type: "postgres" | "mysql" | "mariadb" | "sqlserver" | "sqlite" | "oracle" | "kingbase" | "dm";
   host?: string;
   port?: number;
   database?: string;

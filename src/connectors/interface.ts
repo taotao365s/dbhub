@@ -1,7 +1,7 @@
 /**
  * Type definition for supported database connector types
  */
-export type ConnectorType = "postgres" | "mysql" | "mariadb" | "sqlite" | "sqlserver" | "oracle" | "kingbase";
+export type ConnectorType = "postgres" | "mysql" | "mariadb" | "sqlite" | "sqlserver" | "oracle" | "kingbase" | "dm";
 
 /** SQL syntax may differ from the connection protocol (Kingbase compatibility modes). */
 export type SQLDialect = ConnectorType | "kingbase-mysql";
