@@ -1,4 +1,4 @@
-import type { ConnectorType } from "../connectors/interface.js";
+import type { SQLDialect } from "../connectors/interface.js";
 
 /**
  * Quote a database identifier (table name, schema name, column name) for safe use in SQL queries.
@@ -21,7 +21,7 @@ import type { ConnectorType } from "../connectors/interface.js";
  * @returns The properly quoted identifier
  * @throws Error if identifier contains null bytes or control characters
  */
-export function quoteIdentifier(identifier: string, dbType: ConnectorType): string {
+export function quoteIdentifier(identifier: string, dbType: SQLDialect): string {
   // Validate: no null bytes or dangerous control characters
   if (/[\0\x08\x09\x1a\n\r]/.test(identifier)) {
     throw new Error(`Invalid identifier: contains control characters: ${identifier}`);
@@ -34,12 +34,14 @@ export function quoteIdentifier(identifier: string, dbType: ConnectorType): stri
 
   switch (dbType) {
     case "postgres":
+    case "kingbase":
     case "sqlite":
     case "oracle":
       // PostgreSQL, SQLite and Oracle use double quotes
       // Escape existing double quotes by doubling them
       return `"${identifier.replace(/"/g, '""')}"`;
 
+    case "kingbase-mysql":
     case "mysql":
     case "mariadb":
       // MySQL and MariaDB use backticks
@@ -68,7 +70,7 @@ export function quoteIdentifier(identifier: string, dbType: ConnectorType): stri
 export function quoteQualifiedIdentifier(
   tableName: string,
   schemaName: string | undefined,
-  dbType: ConnectorType
+  dbType: SQLDialect
 ): string {
   const quotedTable = quoteIdentifier(tableName, dbType);
 

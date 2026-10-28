@@ -15,7 +15,7 @@
  * derives from this module instead of re-interpreting the boolean.
  */
 
-import { ConnectorType } from "../connectors/interface.js";
+import { SQLDialect } from "../connectors/interface.js";
 import {
   isReadOnlySQL,
   hasEscapeHatchFunction,
@@ -55,7 +55,7 @@ const ddlPattern = /\b(?:create|alter|drop|truncate|rename)\b/i;
 const dmlPattern = /\b(?:insert|update|delete|merge|replace\s+(?:(?:low_priority|delayed)\s+)?into)\b/i;
 const grantRevokePattern = /\b(?:grant|revoke)\b/i;
 
-function isAdminStatement(stripped: string, connectorType: ConnectorType): boolean {
+function isAdminStatement(stripped: string, connectorType: SQLDialect): boolean {
   if (grantRevokePattern.test(stripped)) return true;
   // Call-position escape-hatch functions (SQL Server OPENQUERY & co., the
   // MySQL/MariaDB file/lock functions, PostgreSQL filesystem reads).
@@ -90,7 +90,7 @@ export function isReadOnlyPolicy(policy: AccessPolicy): boolean {
  * boundary (the dialect-sensitive part), then names the non-read class from
  * the first matching keyword family.
  */
-export function classifyStatement(sql: string, connectorType: ConnectorType): StatementClass {
+export function classifyStatement(sql: string, connectorType: SQLDialect): StatementClass {
   if (isReadOnlySQL(sql, connectorType)) {
     return "read";
   }
@@ -105,7 +105,7 @@ export function classifyStatement(sql: string, connectorType: ConnectorType): St
  * Classify a possibly multi-statement SQL string: the most privileged class
  * among its statements wins.
  */
-export function classifySQL(sql: string, connectorType: ConnectorType): StatementClass {
+export function classifySQL(sql: string, connectorType: SQLDialect): StatementClass {
   let strictest: StatementClass = "read";
   for (const statement of splitSQLStatements(sql, connectorType)) {
     const cls = classifyStatement(statement, connectorType);
@@ -120,7 +120,7 @@ export function classifySQL(sql: string, connectorType: ConnectorType): Statemen
 export function sqlVerdict(
   policy: AccessPolicy,
   sql: string,
-  connectorType: ConnectorType
+  connectorType: SQLDialect
 ): AccessVerdict {
   return policy[classifySQL(sql, connectorType)];
 }

@@ -5,6 +5,7 @@ import { loadConnectors } from "./utils/module-loader.js";
 
 // Each load function uses a string literal so the bundler can resolve it.
 const connectorModules = [
+  { load: () => import("./connectors/kingbase/index.js"), name: "KingbaseES", driver: "pg" },
   { load: () => import("./connectors/postgres/index.js"), name: "PostgreSQL", driver: "pg" },
   { load: () => import("./connectors/sqlserver/index.js"), name: "SQL Server", driver: "mssql" },
   { load: () => import("./connectors/sqlite/index.js"), name: "SQLite", driver: "node:sqlite" },

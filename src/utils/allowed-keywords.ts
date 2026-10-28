@@ -1,4 +1,4 @@
-import { ConnectorType } from "../connectors/interface.js";
+import { SQLDialect } from "../connectors/interface.js";
 import { stripCommentsAndStrings } from "./sql-parser.js";
 
 /**
@@ -6,8 +6,10 @@ import { stripCommentsAndStrings } from "./sql-parser.js";
  * Not only SELECT queries are allowed,
  * but also other queries that are not destructive
  */
-export const allowedKeywords: Record<ConnectorType, string[]> = {
+export const allowedKeywords: Record<SQLDialect, string[]> = {
   postgres: ["select", "with", "explain", "show"],
+  kingbase: ["select", "with", "explain", "show"],
+  "kingbase-mysql": ["select", "with", "explain", "show", "describe", "desc"],
   mysql: ["select", "with", "explain", "show", "describe", "desc"],
   mariadb: ["select", "with", "explain", "show", "describe", "desc"],
   sqlite: ["select", "with", "explain", "pragma"],
@@ -149,10 +151,11 @@ export const sqlServerPassThroughPattern = new RegExp(
  * call-position functions, and already fail the first-keyword allow-list in
  * isReadOnlySQL. They classify as admin via sqlServerDynamicSqlPattern.
  */
-export const escapeHatchFunctionKeywords: Partial<Record<ConnectorType, readonly string[]>> = {
+export const escapeHatchFunctionKeywords: Partial<Record<SQLDialect, readonly string[]>> = {
   mysql: ["load_file", "get_lock", "release_lock", "release_all_locks"],
   mariadb: ["load_file", "get_lock", "release_lock", "release_all_locks"],
   postgres: ["pg_read_file", "pg_read_binary_file", "pg_ls_dir", "set_config"],
+  kingbase: ["pg_read_file", "pg_read_binary_file", "pg_ls_dir", "sys_read_file", "sys_read_binary_file", "sys_ls_dir", "set_config", "utl_http", "utl_tcp", "utl_smtp", "utl_inaddr", "utl_file", "dbms_ldap", "dbms_sql", "dbms_scheduler", "dbms_java", "dbms_lob", "dbms_xslprocessor", "dbms_advisor"],
   sqlserver: sqlServerPassThroughKeywords,
   // Oracle packages a SELECT can call to reach outside the database, matched
   // as `package.member(` (see escapeHatchCallSuffix).
@@ -179,16 +182,20 @@ export const escapeHatchFunctionKeywords: Partial<Record<ConnectorType, readonly
  * column, table or alias merely named after the keyword, or a qualified
  * column reference like `dbms_sql.foo`, still classifies as read-only.
  */
-const escapeHatchCallSuffix: Partial<Record<ConnectorType, string>> = {
+const escapeHatchCallSuffix: Partial<Record<SQLDialect, string>> = {
+  kingbase: "\\s*(?:\\.\\s*[a-z_][a-z0-9_$#]*\\s*)?\\(",
   oracle: "\\s*\\.\\s*[a-z_][a-z0-9_$#]*\\s*\\(",
 };
 const DEFAULT_CALL_SUFFIX = "\\s*\\(";
 
-const escapeHatchFunctionPatterns: Partial<Record<ConnectorType, RegExp>> = Object.fromEntries(
+escapeHatchFunctionKeywords["kingbase-mysql"] = [...escapeHatchFunctionKeywords.kingbase!, "load_file", "get_lock", "release_lock", "release_all_locks"];
+escapeHatchCallSuffix["kingbase-mysql"] = escapeHatchCallSuffix.kingbase;
+
+const escapeHatchFunctionPatterns: Partial<Record<SQLDialect, RegExp>> = Object.fromEntries(
   Object.entries(escapeHatchFunctionKeywords).map(([type, keywords]) => [
     type,
     new RegExp(
-      `\\b(?:${keywords.join("|")})${escapeHatchCallSuffix[type as ConnectorType] ?? DEFAULT_CALL_SUFFIX}`,
+      `\\b(?:${keywords.join("|")})${escapeHatchCallSuffix[type as SQLDialect] ?? DEFAULT_CALL_SUFFIX}`,
       "i"
     ),
   ])
@@ -200,9 +207,9 @@ const escapeHatchFunctionPatterns: Partial<Record<ConnectorType, RegExp>> = Obje
  */
 export function hasEscapeHatchFunction(
   strippedSQL: string,
-  connectorType: ConnectorType | string
+  connectorType: SQLDialect | string
 ): boolean {
-  const pattern = escapeHatchFunctionPatterns[connectorType as ConnectorType];
+  const pattern = escapeHatchFunctionPatterns[connectorType as SQLDialect];
   return pattern !== undefined && pattern.test(strippedSQL);
 }
 
@@ -216,8 +223,10 @@ const mutatingPatternSqlServer = new RegExp(
 );
 
 /** Per-dialect mutating keyword pattern */
-const mutatingPatterns: Record<ConnectorType, RegExp> = {
+const mutatingPatterns: Record<SQLDialect, RegExp> = {
   postgres: mutatingPattern,
+  kingbase: mutatingPattern,
+  "kingbase-mysql": mutatingPatternWithReplace,
   mysql: mutatingPatternWithReplace,
   mariadb: mutatingPatternWithReplace,
   sqlite: mutatingPatternWithReplace,
@@ -233,9 +242,9 @@ const mutatingPatterns: Record<ConnectorType, RegExp> = {
  */
 export function hasMutatingKeyword(
   strippedSQL: string,
-  connectorType?: ConnectorType | string
+  connectorType?: SQLDialect | string
 ): boolean {
-  return (mutatingPatterns[connectorType as ConnectorType] ?? mutatingPattern).test(strippedSQL);
+  return (mutatingPatterns[connectorType as SQLDialect] ?? mutatingPattern).test(strippedSQL);
 }
 
 const selectIntoPattern = /\bselect\b[\s\S]+\binto\b/i;
@@ -267,9 +276,9 @@ const explainAnalyzePattern =
  * 3. For WITH/SELECT statements, checks for mutating keywords and SELECT INTO.
  * 4. For EXPLAIN statements, rejects EXPLAIN ANALYZE with DML.
  */
-export function isReadOnlySQL(sql: string, connectorType: ConnectorType | string): boolean {
+export function isReadOnlySQL(sql: string, connectorType: SQLDialect | string): boolean {
   return checkReadOnly(
-    stripCommentsAndStrings(sql, connectorType as ConnectorType).trim().toLowerCase(),
+    stripCommentsAndStrings(sql, connectorType as SQLDialect).trim().toLowerCase(),
     connectorType,
   );
 }
@@ -280,12 +289,12 @@ export function isReadOnlySQL(sql: string, connectorType: ConnectorType | string
  * for the statement's real leading token. Returns "" for empty/whitespace-only
  * or comment-only input.
  */
-export function getFirstKeyword(sql: string, connectorType: ConnectorType | string): string {
-  const cleaned = stripCommentsAndStrings(sql, connectorType as ConnectorType).trim();
+export function getFirstKeyword(sql: string, connectorType: SQLDialect | string): string {
+  const cleaned = stripCommentsAndStrings(sql, connectorType as SQLDialect).trim();
   return cleaned.match(/\S+/)?.[0]?.toLowerCase() ?? "";
 }
 
-function checkReadOnly(cleanedSQL: string, connectorType: ConnectorType | string): boolean {
+function checkReadOnly(cleanedSQL: string, connectorType: SQLDialect | string): boolean {
   // Empty after stripping → deny. Attacker-crafted inputs may reduce to
   // empty strings after comment/string removal to evade keyword checks.
   if (!cleanedSQL) {
@@ -295,7 +304,7 @@ function checkReadOnly(cleanedSQL: string, connectorType: ConnectorType | string
   const firstWord = cleanedSQL.match(/\S+/)?.[0] ?? "";
 
   const keywordList =
-    allowedKeywords[connectorType as ConnectorType] || [];
+    allowedKeywords[connectorType as SQLDialect] || [];
 
   if (!keywordList.includes(firstWord)) {
     return false;

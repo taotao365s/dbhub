@@ -10,7 +10,7 @@ import {
   createToolSuccessResponse,
   createToolErrorResponse,
 } from "../utils/response-formatter.js";
-import { mapArgumentsToArray } from "../utils/parameter-mapper.js";
+import { mapArgumentsToArray, validateParameters } from "../utils/parameter-mapper.js";
 import {
   createReadonlyViolationMessage,
   toStatementsPayload,
@@ -191,6 +191,9 @@ export function createCustomToolHandler(toolConfig: ToolConfig) {
 
       // 3. Get connector for the specified source
       const connector = ConnectorManager.getCurrentConnector(toolConfig.source);
+      if (connector.id === "kingbase" && "statement" in toolConfig) {
+        validateParameters(toolConfig.statement, toolConfig.parameters, connector.getSQLDialect?.() ?? connector.id);
+      }
 
       // 4. Build execute options from the tool's access policy (compiled
       // from the per-tool readonly config); the engine-level read-only
@@ -202,7 +205,7 @@ export function createCustomToolHandler(toolConfig: ToolConfig) {
       };
 
       // 5. Gate the statement through the policy
-      if (sqlVerdict(policy, toolConfig.statement, connector.id) === "deny") {
+      if (sqlVerdict(policy, toolConfig.statement, connector.getSQLDialect?.() ?? connector.id) === "deny") {
         errorMessage = createReadonlyViolationMessage(toolConfig.name, toolConfig.source, connector.id);
         success = false;
         return createToolErrorResponse(errorMessage, "READONLY_VIOLATION");

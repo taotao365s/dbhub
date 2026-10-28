@@ -133,11 +133,14 @@ export class ToolRegistry {
     const connectorType = sourceConfig.type;
 
     try {
-      validateParameters(
-        toolConfig.statement,
-        toolConfig.parameters,
-        connectorType
-      );
+      try {
+        validateParameters(toolConfig.statement, toolConfig.parameters, connectorType);
+      } catch (error) {
+        if (connectorType !== "kingbase" || !("statement" in toolConfig)) throw error;
+        // Lazy sources have not revealed their mode yet. Accept either V8
+        // syntax here; the handler revalidates against the connected dialect.
+        validateParameters(toolConfig.statement, toolConfig.parameters, "kingbase-mysql");
+      }
     } catch (error) {
       throw new Error(
         `Tool '${toolConfig.name}' validation failed: ${(error as Error).message}`

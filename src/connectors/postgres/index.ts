@@ -3,6 +3,7 @@ const { Pool } = pg;
 import {
   Connector,
   ConnectorType,
+  SQLDialect,
   ConnectorRegistry,
   DSNParser,
   SQLResult,
@@ -59,7 +60,7 @@ import {
  * - sslkey=/path/to/client.key: PEM private key for sslcert (unencrypted; supports ~/ expansion)
  * Both must be set together, and only take effect when TLS is enabled.
  */
-class PostgresDSNParser implements DSNParser {
+export class PostgresDSNParser implements DSNParser {
   async parse(dsn: string, config?: ConnectorConfig): Promise<pg.PoolConfig> {
     const connectionTimeoutSeconds = config?.connectionTimeoutSeconds;
     const queryTimeoutSeconds = config?.queryTimeoutSeconds;
@@ -238,7 +239,11 @@ export class PostgresConnector implements Connector {
   private sourceId: string = "default";
 
   // Default schema for discovery methods (first entry from search_path, or "public")
-  private defaultSchema: string = "public";
+  protected defaultSchema: string = "public";
+
+  getSQLDialect(): SQLDialect {
+    return this.id;
+  }
 
   getId(): string {
     return this.sourceId;
@@ -269,7 +274,7 @@ export class PostgresConnector implements Connector {
         const schemas = config.searchPath.split(',').map(s => s.trim()).filter(s => s.length > 0);
         if (schemas.length > 0) {
           this.defaultSchema = schemas[0];
-          const quotedSchemas = schemas.map(s => quoteIdentifier(s, 'postgres'));
+          const quotedSchemas = schemas.map(s => quoteIdentifier(s, this.id));
           // Escape backslashes then spaces for PostgreSQL options string parser
           const optionsValue = quotedSchemas.join(',').replace(/\\/g, '\\\\').replace(/ /g, '\\ ');
           poolConfig.options = (poolConfig.options || '') + ` -c search_path=${optionsValue}`;
@@ -779,14 +784,14 @@ export class PostgresConnector implements Connector {
     let isClientDiscarded = false;
     try {
       // Check if this is a multi-statement query
-      const statements = splitSQLStatements(sql, "postgres");
+      const statements = splitSQLStatements(sql, this.getSQLDialect());
 
       if (statements.length === 1) {
         // Single statement - apply maxRows (with a truncation probe row) if applicable
         const { sql: processedStatement, probeApplied } = SQLRowLimiter.applyMaxRowsWithTruncationProbe(
             statements[0],
             options.maxRows,
-            "postgres"
+            this.getSQLDialect()
           );
 
         // Engine-level read-only enforcement: when the tool is read-only, run the
@@ -849,7 +854,7 @@ export class PostgresConnector implements Connector {
             const { sql: processedStatement, probeApplied } = SQLRowLimiter.applyMaxRowsWithTruncationProbe(
             statement,
             options.maxRows,
-            "postgres"
+            this.getSQLDialect()
           );
 
             const result = await client.query(processedStatement);

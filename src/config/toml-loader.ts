@@ -449,7 +449,7 @@ function validateSourceConfig(source: SourceConfig, configPath: string): void {
 
   // Validate type if provided
   if (source.type) {
-    const validTypes = ["postgres", "mysql", "mariadb", "sqlserver", "sqlite", "oracle"];
+    const validTypes = ["postgres", "mysql", "mariadb", "sqlserver", "sqlite", "oracle", "kingbase"];
     if (!validTypes.includes(source.type)) {
       throw new Error(
         `Configuration file ${configPath}: source '${source.id}' has invalid type '${source.type}'. ` +
@@ -543,9 +543,9 @@ function validateSourceConfig(source: SourceConfig, configPath: string): void {
   }
 
   if (source.pool_max_connections !== undefined) {
-    if (source.type !== "postgres") {
+    if (source.type !== "postgres" && source.type !== "kingbase") {
       throw new Error(
-        `Configuration file ${configPath}: source '${source.id}' has 'pool_max_connections' but it is only supported for PostgreSQL sources.`
+        `Configuration file ${configPath}: source '${source.id}' has 'pool_max_connections' but it is only supported for PostgreSQL and KingbaseES sources.`
       );
     }
     if (
@@ -606,6 +606,7 @@ function validateSourceConfig(source: SourceConfig, configPath: string): void {
     // verify-full for server certificate and hostname verification.
     const verifyModesByType: Record<string, string[]> = {
       postgres: ["verify-ca", "verify-full"],
+      kingbase: ["verify-ca", "verify-full"],
       sqlserver: ["verify-full"],
       oracle: ["verify-full"],
     };
@@ -635,9 +636,9 @@ function validateSourceConfig(source: SourceConfig, configPath: string): void {
     // Only the PostgreSQL connector consumes sslrootcert. Rejecting it
     // elsewhere keeps a trust anchor from being silently ignored (Oracle
     // verify-full validates against the system trust store / wallet).
-    if (source.type !== "postgres") {
+    if (source.type !== "postgres" && source.type !== "kingbase") {
       throw new Error(
-        `Configuration file ${configPath}: source '${source.id}' has sslrootcert but it is only supported for PostgreSQL.`
+        `Configuration file ${configPath}: source '${source.id}' has sslrootcert but it is only supported for PostgreSQL and KingbaseES.`
       );
     }
     if (source.sslmode !== "verify-ca" && source.sslmode !== "verify-full") {
@@ -653,9 +654,9 @@ function validateSourceConfig(source: SourceConfig, configPath: string): void {
   // Validate client certificate authentication (sslcert + sslkey)
   if (source.sslcert !== undefined || source.sslkey !== undefined) {
     // Only the PostgreSQL connector presents a client certificate.
-    if (source.type !== "postgres") {
+    if (source.type !== "postgres" && source.type !== "kingbase") {
       throw new Error(
-        `Configuration file ${configPath}: source '${source.id}' has sslcert/sslkey but they are only supported for PostgreSQL.`
+        `Configuration file ${configPath}: source '${source.id}' has sslcert/sslkey but they are only supported for PostgreSQL and KingbaseES.`
       );
     }
     // A TLS handshake needs both the certificate and its private key.
@@ -731,9 +732,9 @@ function validateSourceConfig(source: SourceConfig, configPath: string): void {
 
   // Validate search_path (PostgreSQL only)
   if (source.search_path !== undefined) {
-    if (source.type !== "postgres") {
+    if (source.type !== "postgres" && source.type !== "kingbase") {
       throw new Error(
-        `Configuration file ${configPath}: source '${source.id}' has 'search_path' but it is only supported for PostgreSQL sources.`
+        `Configuration file ${configPath}: source '${source.id}' has 'search_path' but it is only supported for PostgreSQL and KingbaseES sources.`
       );
     }
     if (typeof source.search_path !== "string" || source.search_path.trim().length === 0) {
@@ -1063,7 +1064,7 @@ function mergeSourceFieldsIntoDSN(dsn: string, source: SourceConfig): string {
  * (disable or an unset sslmode is rejected by validation).
  */
 function postgresSslFileParams(source: SourceConfig): Array<{ key: string; param: string }> {
-  if (source.type !== "postgres") {
+  if (source.type !== "postgres" && source.type !== "kingbase") {
     return [];
   }
   const params: Array<{ key: string; param: string }> = [];

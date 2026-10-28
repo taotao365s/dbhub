@@ -3,7 +3,7 @@ import { ConnectorManager } from "../connectors/manager.js";
 import { createToolSuccessResponse, createToolErrorResponse } from "../utils/response-formatter.js";
 import { splitSQLStatements, stripCommentsAndStrings } from "../utils/sql-parser.js";
 import { getFirstKeyword } from "../utils/allowed-keywords.js";
-import type { ConnectorType } from "../connectors/interface.js";
+import type { SQLDialect } from "../connectors/interface.js";
 import {
   getEffectiveSourceId,
   resolveTrackedToolName,
@@ -25,7 +25,7 @@ export const explainSqlInputSchema = z.object(explainSqlSchema);
  * statement) - explain_sql is meant to always be side-effect free, regardless
  * of the source's readonly/write configuration.
  */
-function buildExplainStatement(connectorType: ConnectorType, sql: string): string {
+function buildExplainStatement(connectorType: SQLDialect, sql: string): string {
   // Bare EXPLAIN on SQLite returns raw VDBE bytecode, not a query plan.
   // EXPLAIN QUERY PLAN is the human-readable form.
   if (connectorType === "sqlite") {
@@ -40,7 +40,7 @@ function buildExplainStatement(connectorType: ConnectorType, sql: string): strin
  * our prefix to form "EXPLAIN ANALYZE ..."), or that smuggles multiple
  * statements past the single EXPLAIN we emit.
  */
-function validateExplainInput(sql: string, connectorType: ConnectorType): string | null {
+function validateExplainInput(sql: string, connectorType: SQLDialect): string | null {
   const statements = splitSQLStatements(sql, connectorType);
   if (statements.length !== 1) {
     return "explain_sql only supports a single SQL statement";
@@ -93,7 +93,7 @@ export function createExplainSqlToolHandler(sourceId?: string) {
       // Get connector for the specified source (or default)
       const connector = ConnectorManager.getCurrentConnector(sourceId);
 
-      const validationError = validateExplainInput(sql, connector.id);
+      const validationError = validateExplainInput(sql, connector.getSQLDialect?.() ?? connector.id);
       if (validationError) {
         success = false;
         errorMessage = validationError;

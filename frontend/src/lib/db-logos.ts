@@ -4,9 +4,11 @@ import MySQLLogo from '../assets/logos/mysql.svg';
 import MariaDBLogo from '../assets/logos/mariadb.svg';
 import SQLServerLogo from '../assets/logos/sqlserver.svg';
 import SQLiteLogo from '../assets/logos/sqlite.svg';
+import KingbaseLogo from '../assets/logos/kingbase.svg';
 import OracleLogo from '../assets/logos/oracle.svg';
 
 export const DB_LOGOS: Record<DatabaseType, string> = {
+  kingbase: KingbaseLogo,
   postgres: PostgresLogo,
   mysql: MySQLLogo,
   mariadb: MariaDBLogo,

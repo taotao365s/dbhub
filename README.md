@@ -43,7 +43,7 @@
 DBHub is a minimal MCP server: token-efficient, zero-dependency, and just two tools by default with opt-in extras. This lightweight gateway allows MCP-compatible clients to connect to and explore different databases:
 
 - **Minimal**: Zero dependency, token efficient with a minimal set of MCP tools to maximize context window
-- **Multi-Database**: PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, and SQLite through a single interface
+- **Multi-Database**: PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, KingbaseES, and SQLite through a single interface
 - **Multi-Connection**: Connect to multiple databases simultaneously with TOML configuration
 - **Guardrails**: Read-only mode, row limiting, and query timeout to prevent runaway operations
 - **Secure Access**: SSH tunneling and SSL/TLS encryption
@@ -69,7 +69,66 @@ DBHub loads just 2 tools by default at **1.4k tokens** — 13-14x fewer than alt
 
 ## Supported Databases
 
-PostgreSQL, MySQL, SQL Server, MariaDB, Oracle, and SQLite.
+PostgreSQL, MySQL, SQL Server, MariaDB, Oracle, KingbaseES, and SQLite.
+
+### KingbaseES V8
+
+This checkout supports KingbaseES V8R6 in **Oracle and MySQL compatibility modes**,
+validated against **V008R006C009B0014 on ARM64**. It uses the existing `pg` driver
+over the PostgreSQL wire protocol. Both modes use `kingbase://` (default port
+54321) and **`$1, $2` parameter bindings**, including MySQL mode. The connector
+detects `database_mode` on connection and selects the matching SQL scanner.
+Other major versions and PG compatibility mode are not enabled by this adapter.
+
+Example `dbhub.toml` (set `KINGBASE_DSN` in your environment):
+
+```toml
+[[sources]]
+id = "kingbase"
+dsn = "${KINGBASE_DSN}"
+search_path = "public"
+query_timeout = 30
+pool_max_connections = 5
+
+[[tools]]
+name = "execute_sql"
+source = "kingbase"
+readonly = true
+max_rows = 100
+
+[[tools]]
+name = "search_objects"
+source = "kingbase"
+```
+
+Use a DSN such as `kingbase://user:password@localhost:54321/test`; percent-encode
+special characters in credentials. Structured connection fields also accept
+`type = "kingbase"`. Build this checkout and run
+`node dist/index.js --transport stdio --config ./dbhub.toml`.
+The published upstream package does not include this local change.
+
+The adapter supports discovery, comments, indexes, routine definitions,
+EXPLAIN, health metrics, readonly transactions and query timeouts. Oracle
+`q'[...]'` and dollar-quoted strings are recognized in both modes; MySQL
+mode additionally recognizes backticks and `#` comments. Comma-style
+`LIMIT offset,count` preserves the offset when enforcing `max_rows`.
+Date/time values are returned as server text; MySQL fractional timestamps
+require an explicit precision such as `timestamp(6)`.
+
+To run real-instance tests, set `KINGBASE_TEST_DSN` (Oracle mode) and/or
+`KINGBASE_MYSQL_TEST_DSN` (MySQL mode), then run:
+
+```bash
+pnpm exec vitest run --project integration src/connectors/__tests__/kingbase.integration.test.ts
+pnpm run build:backend
+node scripts/smoke-test-kingbase.mjs
+```
+
+The integration suite creates and drops a unique `dbhub_it_*` schema and needs
+DDL permissions in a test database. It does not recreate or remove containers.
+The MCP smoke test only reads data and checks that a DDL request is rejected.
+Modes without a configured DSN are skipped; TLS and SSH need separate
+environment-specific validation.
 
 ## MCP Tools
 

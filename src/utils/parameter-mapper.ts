@@ -3,7 +3,7 @@
  * Maps tool parameters to connector-specific parameter syntax
  */
 
-import { ConnectorType } from "../connectors/interface.js";
+import { SQLDialect } from "../connectors/interface.js";
 import { ParameterConfig } from "../types/config.js";
 import { stripCommentsAndStrings } from "./sql-parser.js";
 
@@ -11,6 +11,8 @@ import { stripCommentsAndStrings } from "./sql-parser.js";
  * Parameter placeholder styles for different database connectors
  */
 export const PARAMETER_STYLES = {
+  "kingbase-mysql": "numbered", // The wire protocol still binds $1, not ?.
+  kingbase: "numbered", // $1, $2, $3
   postgres: "numbered", // $1, $2, $3
   mysql: "positional", // ?, ?, ?
   mariadb: "positional", // ?, ?, ?
@@ -27,7 +29,7 @@ export const PARAMETER_STYLES = {
  */
 export function detectParameterStyle(
   statement: string,
-  connectorType?: ConnectorType
+  connectorType?: SQLDialect
 ): "numbered" | "positional" | "named" | "colon" | "none" {
   // Strip comments and strings (with the dialect's quoting rules, e.g. Oracle
   // q'[...]' literals) to avoid matching parameters inside them
@@ -66,7 +68,7 @@ export function detectParameterStyle(
  */
 export function validateParameterStyle(
   statement: string,
-  connectorType: ConnectorType
+  connectorType: SQLDialect
 ): void {
   const detectedStyle = detectParameterStyle(statement, connectorType);
   const expectedStyle = PARAMETER_STYLES[connectorType];
@@ -99,7 +101,7 @@ export function validateParameterStyle(
  * @returns Number of parameter placeholders required (highest index for numbered/named)
  * @throws Error if numbered/named parameters are not sequential starting from 1
  */
-export function countParameters(statement: string, connectorType?: ConnectorType): number {
+export function countParameters(statement: string, connectorType?: SQLDialect): number {
   const style = detectParameterStyle(statement, connectorType);
   // Strip comments and strings to avoid matching parameters inside them
   const cleanedSQL = stripCommentsAndStrings(statement, connectorType);
@@ -160,7 +162,7 @@ function countIndexedParameters(
 export function validateParameters(
   statement: string,
   parameters: ParameterConfig[] | undefined,
-  connectorType: ConnectorType
+  connectorType: SQLDialect
 ): void {
   // Validate parameter style matches connector
   validateParameterStyle(statement, connectorType);

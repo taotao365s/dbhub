@@ -1,5 +1,5 @@
 import { blankCommentsAndStrings } from "./sql-parser.js";
-import type { ConnectorType, SQLResultSet } from "../connectors/interface.js";
+import type { SQLDialect, SQLResultSet } from "../connectors/interface.js";
 import { hasMutatingKeyword } from "./allowed-keywords.js";
 
 /**
@@ -56,7 +56,7 @@ export class SQLRowLimiter {
    * blanked the same way the read-only classifier blanks it; without it only
    * ANSI syntax is recognized.
    */
-  static isSelectQuery(sql: string, dialect?: ConnectorType): boolean {
+  static isSelectQuery(sql: string, dialect?: SQLDialect): boolean {
     const blankedSQL = blankCommentsAndStrings(sql, dialect).trim().toLowerCase();
     // Leading parentheses are skipped: `(SELECT ...) UNION (SELECT ...)` is a
     // row-returning statement whose first token is `(`. So is a leading
@@ -72,7 +72,7 @@ export class SQLRowLimiter {
    * Check if a SQL statement has a LIMIT clause of its own (not one nested in
    * a CTE body or subquery).
    */
-  static hasLimitClause(sql: string, dialect?: ConnectorType): boolean {
+  static hasLimitClause(sql: string, dialect?: SQLDialect): boolean {
     return this.findTopLevelLimit(sql, dialect) !== null;
   }
 
@@ -88,7 +88,7 @@ export class SQLRowLimiter {
    * own, or when that LIMIT is a parameter placeholder rather than a literal
    * (see hasParameterizedLimit).
    */
-  static extractLimitValue(sql: string, dialect?: ConnectorType): number | null {
+  static extractLimitValue(sql: string, dialect?: SQLDialect): number | null {
     return this.findTopLevelLimit(sql, dialect)?.value ?? null;
   }
 
@@ -103,7 +103,7 @@ export class SQLRowLimiter {
    * Check if the statement's own LIMIT clause uses a parameter placeholder
    * ($1, ?, @p1) instead of a literal number.
    */
-  static hasParameterizedLimit(sql: string, dialect?: ConnectorType): boolean {
+  static hasParameterizedLimit(sql: string, dialect?: SQLDialect): boolean {
     const limit = this.findTopLevelLimit(sql, dialect);
     return limit !== null && limit.value === null;
   }
@@ -111,7 +111,7 @@ export class SQLRowLimiter {
   /**
    * Add or tighten the LIMIT clause of a SQL statement
    */
-  static applyLimitToQuery(sql: string, maxRows: number, dialect?: ConnectorType): string {
+  static applyLimitToQuery(sql: string, maxRows: number, dialect?: SQLDialect): string {
     const limit = this.findTopLevelLimit(sql, dialect);
 
     if (limit !== null && limit.value !== null) {
@@ -162,7 +162,7 @@ export class SQLRowLimiter {
     sql: string,
     regex: RegExp,
     pick: "first" | "last",
-    dialect?: ConnectorType
+    dialect?: SQLDialect
   ): RegExpExecArray | null {
     let found: RegExpExecArray | null = null;
     this.scanTopLevel(blankCommentsAndStrings(sql, dialect), regex, (m) => {
@@ -174,7 +174,7 @@ export class SQLRowLimiter {
   }
 
   /** The statement's own LIMIT clause, literal or parameterized ($1, ?, @p1). */
-  private static findTopLevelLimit(sql: string, dialect?: ConnectorType): TopLevelClause | null {
+  private static findTopLevelLimit(sql: string, dialect?: SQLDialect): TopLevelClause | null {
     const match = this.findTopLevelMatch(
       sql,
       /\(|\)|\blimit\s+(?:(\d+)|\$\d+|\?|@p\d+)/gi,
@@ -464,7 +464,7 @@ export class SQLRowLimiter {
    *
    * `dialect` selects the connector's comment/string scanner (see isSelectQuery).
    */
-  static applyMaxRows(sql: string, maxRows: number | undefined, dialect?: ConnectorType): string {
+  static applyMaxRows(sql: string, maxRows: number | undefined, dialect?: SQLDialect): string {
     if (!maxRows || !this.isSelectQuery(sql, dialect)) {
       return sql;
     }
@@ -558,10 +558,20 @@ export class SQLRowLimiter {
   static applyMaxRowsWithTruncationProbe(
     sql: string,
     maxRows: number | undefined,
-    dialect?: ConnectorType
+    dialect?: SQLDialect
   ): MaxRowsRewrite {
     if (!maxRows || !this.isSelectQuery(sql, dialect)) {
       return { sql, probeApplied: false };
+    }
+    if (dialect === "kingbase" || dialect === "kingbase-mysql") {
+      // V8 accepts LIMIT offset,count in both compatibility modes. Normalize
+      // only the outer clause; treating offset as the cap silently loses rows.
+      const commaLimit = this.findTopLevelMatch(
+        sql, /\(|\)|\blimit\s+(\d+|\$\d+)\s*,\s*(\d+|\$\d+)/gi, "last", dialect
+      );
+      if (commaLimit) {
+        sql = `${sql.slice(0, commaLimit.index)}LIMIT ${commaLimit[2]} OFFSET ${commaLimit[1]}${sql.slice(commaLimit.index + commaLimit[0].length)}`;
+      }
     }
     if (!this.hasParameterizedLimit(sql, dialect)) {
       const existingLimit = this.extractLimitValue(sql, dialect);

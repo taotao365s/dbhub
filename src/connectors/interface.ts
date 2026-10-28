@@ -1,7 +1,10 @@
 /**
  * Type definition for supported database connector types
  */
-export type ConnectorType = "postgres" | "mysql" | "mariadb" | "sqlite" | "sqlserver" | "oracle";
+export type ConnectorType = "postgres" | "mysql" | "mariadb" | "sqlite" | "sqlserver" | "oracle" | "kingbase";
+
+/** SQL syntax may differ from the connection protocol (Kingbase compatibility modes). */
+export type SQLDialect = ConnectorType | "kingbase-mysql";
 
 /**
  * Database Connector Interface
@@ -210,6 +213,7 @@ export interface DSNParser {
 }
 
 export interface Connector {
+  getSQLDialect?(): SQLDialect;
   /** A unique identifier for the connector */
   id: ConnectorType;
 

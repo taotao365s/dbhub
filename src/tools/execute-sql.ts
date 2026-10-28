@@ -52,7 +52,7 @@ export function createExecuteSqlToolHandler(sourceId?: string) {
       // per-tool readonly config; multi-statement input takes the strictest
       // statement's verdict)
       const policy = policyFromReadonly(toolConfig?.readonly);
-      if (sqlVerdict(policy, sql, connector.id) === "deny") {
+      if (sqlVerdict(policy, sql, connector.getSQLDialect?.() ?? connector.id) === "deny") {
         errorMessage = `Read-only mode is enabled. Only the following SQL operations are allowed: ${allowedKeywords[connector.id]?.join(", ") || "none"}`;
         success = false;
         return createToolErrorResponse(errorMessage, "READONLY_VIOLATION");

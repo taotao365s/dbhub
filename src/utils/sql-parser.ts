@@ -1,4 +1,4 @@
-import type { ConnectorType } from "../connectors/interface.js";
+import type { SQLDialect } from "../connectors/interface.js";
 
 const TokenType = { Plain: 0, Comment: 1, QuotedBlock: 2 } as const;
 
@@ -210,10 +210,37 @@ function scanTokenOracle(sql: string, i: number): SQLToken {
     ?? plainToken(i);
 }
 
+// V8 Oracle mode accepts both PostgreSQL dollar quotes and Oracle q literals.
+function scanTokenKingbase(sql: string, i: number): SQLToken {
+  if ((sql[i] === "E" || sql[i] === "e") && sql[i + 1] === "'") {
+    let end = i + 2;
+    while (end < sql.length) {
+      if (sql[end] === "\\") { end = Math.min(end + 2, sql.length); }
+      else if (sql[end] === "'" && sql[end + 1] === "'") { end += 2; }
+      else if (sql[end] === "'") { end++; break; }
+      else { end++; }
+    }
+    return { type: TokenType.QuotedBlock, end };
+  }
+  return scanOracleAlternativeQuotedString(sql, i) ?? scanTokenPostgres(sql, i);
+}
+
+function scanTokenKingbaseMySQL(sql: string, i: number): SQLToken {
+  if (sql[i] === "#") {
+    let end = sql.indexOf("\n", i);
+    if (end === -1) end = sql.length;
+    return { type: TokenType.Comment, end };
+  }
+  // Kingbase keeps PostgreSQL's -- comment rule, including -- without a space.
+  return scanBacktickQuotedIdentifier(sql, i) ?? scanTokenKingbase(sql, i);
+}
+
 type TokenScanner = (sql: string, i: number) => SQLToken;
 
-const dialectScanners: Record<ConnectorType, TokenScanner> = {
+const dialectScanners: Record<SQLDialect, TokenScanner> = {
   postgres: scanTokenPostgres,
+  kingbase: scanTokenKingbase,
+  "kingbase-mysql": scanTokenKingbaseMySQL,
   mysql: scanTokenMySQL,
   mariadb: scanTokenMySQL,
   sqlite: scanTokenSQLite,
@@ -221,7 +248,7 @@ const dialectScanners: Record<ConnectorType, TokenScanner> = {
   oracle: scanTokenOracle,
 };
 
-function getScanner(dialect?: ConnectorType): TokenScanner {
+function getScanner(dialect?: SQLDialect): TokenScanner {
   return dialect ? (dialectScanners[dialect] ?? scanTokenAnsi) : scanTokenAnsi;
 }
 
@@ -229,7 +256,7 @@ function getScanner(dialect?: ConnectorType): TokenScanner {
  * Replace comments, string literals, and dialect-specific quoted blocks with a single space each.
  * When no dialect is specified, only ANSI SQL syntax is recognized.
  */
-export function stripCommentsAndStrings(sql: string, dialect?: ConnectorType): string {
+export function stripCommentsAndStrings(sql: string, dialect?: SQLDialect): string {
   const scanToken = getScanner(dialect);
   const parts: string[] = [];
   let plainStart = -1;
@@ -266,7 +293,7 @@ export function stripCommentsAndStrings(sql: string, dialect?: ConnectorType): s
  * found via regex/scanning on the cleaned text (rather than just testing for
  * a match) should use this instead.
  */
-export function blankCommentsAndStrings(sql: string, dialect?: ConnectorType): string {
+export function blankCommentsAndStrings(sql: string, dialect?: SQLDialect): string {
   const scanToken = getScanner(dialect);
   let result = "";
   let i = 0;
@@ -298,7 +325,7 @@ export const LEADING_SQL_NOISE = /^(?:\s+|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*/;
  * Split SQL into individual statements, handling semicolons inside quoted contexts.
  * When no dialect is specified, only ANSI SQL syntax is recognized.
  */
-export function splitSQLStatements(sql: string, dialect?: ConnectorType): string[] {
+export function splitSQLStatements(sql: string, dialect?: SQLDialect): string[] {
   const scanToken = getScanner(dialect);
   const statements: string[] = [];
   let stmtStart = 0;

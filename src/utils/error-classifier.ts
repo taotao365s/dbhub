@@ -37,6 +37,7 @@ const NETWORK_CODES_BY_TYPE: Partial<Record<ConnectorType, ReadonlySet<string>>>
 // Per-connector authentication failure signals. Keyed by code or errno.
 const AUTH_CODES: Record<ConnectorType, ReadonlyArray<string | number>> = {
   postgres: ["28P01", "28000"],
+  kingbase: ["28P01", "28000"],
   mysql: ["ER_ACCESS_DENIED_ERROR", 1045, 1698],
   mariadb: ["ER_ACCESS_DENIED_ERROR", 1045, 1698],
   sqlserver: ["ELOGIN"],
