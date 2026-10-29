@@ -21,6 +21,7 @@ for (const [mode, dsn] of sources) {
     `[[sources]]
 id = "default"
 dsn = "${dsn.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"
+init_script = "SET application_name = 'dbhub_init_smoke'"
 [[tools]]
 name = "execute_sql"
 source = "default"
@@ -53,6 +54,10 @@ source = "default"
     await client.connect(transport);
     const tools = await client.listTools();
     assert.ok(tools.tools.some((tool) => tool.name === "execute_sql"));
+    const initialized = await call("execute_sql", {
+      sql: "SELECT current_setting('application_name') AS name",
+    });
+    assert.equal(initialized.data.statements[0].rows[0].name, "dbhub_init_smoke");
     const actual = await call("execute_sql", { sql: "SHOW database_mode" });
     assert.equal(actual.data.statements[0].rows[0].database_mode, mode);
     const query =

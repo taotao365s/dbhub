@@ -70,8 +70,6 @@ afterEach(async () => {
 });
 
 async function expectRecovery(): Promise<void> {
-  // Let the socket 'end'/'close' land while the process is still alive.
-  await new Promise(resolve => setTimeout(resolve, 50));
   // The dropped client was discarded, not returned to the pool: the next
   // query opens a fresh connection instead of drawing the dead one.
   await expect(connector.executeSQL("SELECT 1", {})).resolves.toMatchObject({ resultSets: [{ rowCount: 0 }] });

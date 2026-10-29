@@ -887,6 +887,14 @@ export class PostgresConnector implements Connector {
         isClientDiscarded = true;
         client.release(true);
         await this.cancelBackend(backendPid);
+      } else {
+        // A FATAL response can arrive before the socket's error/end event.
+        // Do not let the next caller acquire that already-doomed connection.
+        const { code, severity } = error as { code?: string; severity?: string };
+        if (severity === "FATAL" || severity === "PANIC" || /^08|^57P0[123]$/.test(code ?? "")) {
+          isClientDiscarded = true;
+          client.release(true);
+        }
       }
       throw error;
     } finally {

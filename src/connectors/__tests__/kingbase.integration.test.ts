@@ -67,6 +67,7 @@ for (const [mode, dsn] of [
 id = "kingbase_it"
 dsn = "${dsn!.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"
 search_path = "${schema},public"
+init_script = ${JSON.stringify('CREATE TABLE "' + schema + '".init_from_toml(n int); INSERT INTO "' + schema + '".init_from_toml VALUES(1)')}
 query_timeout = 1
 pool_max_connections = 2
 
@@ -114,8 +115,68 @@ parameters = [{ name = "id", type = "integer", description = "Value" }]
       }
     });
 
+    it("runs init_script once using the detected compatibility mode", async () => {
+      const initialized = new KingbaseConnector();
+      const initTable = `"${schema}"."InitState"`;
+      const column = mode === "mysql" ? "`value; $99`" : '"value; $99"';
+      try {
+        await initialized.connect(
+          dsn!,
+          `
+          CREATE TABLE ${initTable} (id integer PRIMARY KEY, ${column} varchar(80));
+          INSERT INTO ${initTable} VALUES (1, q'[initialized; once]');
+        `,
+          { poolMaxConnections: 2 }
+        );
+        const results = await Promise.all(
+          Array.from({ length: 4 }, () =>
+            initialized.executeSQL(`SELECT COUNT(*) AS n FROM ${initTable}`, { readonly: true })
+          )
+        );
+        for (const result of results) expect(Number(result.resultSets[0].rows[0].n)).toBe(1);
+      } finally {
+        await initialized.disconnect();
+      }
+    });
+
+    it("rolls back failed initialization and closes the failed connection pool", async () => {
+      const failed = new KingbaseConnector();
+      try {
+        await expect(
+          failed.connect(
+            dsn!,
+            `
+          INSERT INTO ${table}(id,label) VALUES(80,'init rollback');
+          INSERT INTO ${table}(id,label) VALUES(1,'duplicate');
+        `
+          )
+        ).rejects.toThrow();
+        expect((await admin.query(`SELECT id FROM ${table} WHERE id=80`)).rows).toHaveLength(0);
+        await expect(failed.executeSQL("SELECT 1", {})).rejects.toThrow("Not connected");
+      } finally {
+        await failed.disconnect();
+      }
+    });
+
+    it("enforces source readonly during initialization", async () => {
+      const readonly = new KingbaseConnector();
+      try {
+        await expect(
+          readonly.connect(dsn!, `INSERT INTO ${table}(id,label) VALUES(81,'forbidden init')`, {
+            readonly: true,
+          })
+        ).rejects.toThrow();
+        expect((await admin.query(`SELECT id FROM ${table} WHERE id=81`)).rows).toHaveLength(0);
+      } finally {
+        await readonly.disconnect();
+      }
+    });
+
     it("keeps engine identity, default schema, and source identity", async () => {
       expect(connector.id).toBe("kingbase");
+      expect((await admin.query(`SELECT n FROM "${schema}".init_from_toml`)).rows).toEqual([
+        { n: 1 },
+      ]);
       expect(connector.getSQLDialect()).toBe(mode === "mysql" ? "kingbase-mysql" : "kingbase");
       expect(connector.getId()).toBe("kingbase_it");
       expect(await connector.getDefaultSchema()).toBe(schema);

@@ -307,6 +307,28 @@ mode additionally recognizes backticks and `#` comments. Comma-style
 Date/time values are returned as server text; MySQL fractional timestamps
 require an explicit precision such as `timestamp(6)`.
 
+`init_script` executes once per explicit connection initialization, after the
+server version and compatibility mode have been validated. It uses that mode's
+SQL scanner and honors source-level readonly. A failed script fails connection
+initialization and closes its pool; failed DML batches roll back. Scripts are
+not replayed on each new physical connection or after automatic pool recovery.
+Use `search_path` and other connection options for settings that must apply to
+every pooled session. Initialization that commits data should be idempotent if
+the application may explicitly reconnect.
+
+TLS continues to use the `pg` driver. `sslmode=require`, `verify-ca`, and
+`verify-full`, plus `sslrootcert`, `sslcert`, and `sslkey`, work in DSNs or TOML
+source fields. Prefer `verify-full` with the expected CA and server hostname;
+client certificates are required when the server enables mutual TLS. Certificate
+files are reloaded for new physical connections. Real-instance tests cover both
+V8R6C9B14 modes with mutual TLS, wrong CA/hostname, missing client certificate,
+plaintext rejection, explicit require/verify-ca, and certificate rotation.
+
+Pool recovery tests cover saturation/acquisition timeout, terminated idle and
+active backends, TCP connection drops, and a database restart while retaining
+the same connector. Fatal server responses discard the connection immediately,
+even before the TCP close event arrives; failed statements are not retried.
+
 To run real-instance tests, set `KINGBASE_TEST_DSN` (Oracle mode) and/or
 `KINGBASE_MYSQL_TEST_DSN` (MySQL mode), then run:
 
@@ -318,9 +340,28 @@ node scripts/smoke-test-kingbase.mjs
 
 The integration suite creates and drops a unique `dbhub_it_*` schema and needs
 DDL permissions in a test database. It does not recreate or remove containers.
-The MCP smoke test only reads data and checks that a DDL request is rejected.
-Modes without a configured DSN are skipped; TLS and SSH need separate
-environment-specific validation.
+The MCP smoke test verifies session initialization, reads data, and checks that
+a tool-level DDL request is rejected. Pool tests terminate only their own test
+connections and require permission to do so. Modes without configured DSNs are
+skipped. TLS tests additionally require `KINGBASE_TLS_TEST=1`, verify-full DSNs
+with client certificates, a TLS-only mutual-authentication server, and
+`KINGBASE_TLS_WRONG_CA` pointing to an unrelated CA. SSH is not covered by this
+Kingbase-specific suite.
+
+For the complete reproducible suite, use an already loaded, licensed image:
+
+```sh
+pnpm run build:backend
+KINGBASE_DOCKER_IMAGE=kingbase_v008r006c009b0014_single_arm:v1 \
+KINGBASE_TEST_MODE=oracle KINGBASE_TEST_BUILT=1 \
+pnpm exec tsx scripts/test-kingbase-regression.ts
+```
+
+Repeat with `KINGBASE_TEST_MODE=mysql`. The runner creates a uniquely named,
+loopback-only disposable container, generates temporary credentials and
+certificates, runs plaintext and TLS suites plus restart/MCP checks, and cleans
+up its container and files. It never pulls images or changes existing user
+containers. Docker, OpenSSL and installed dependencies are required.
 
 ## MCP Tools
 

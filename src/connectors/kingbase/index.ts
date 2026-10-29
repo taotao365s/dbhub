@@ -62,7 +62,10 @@ export class KingbaseConnector extends PostgresConnector {
     initScript?: string,
     config?: ConnectorConfig
   ): Promise<void> {
-    await super.connect(dsn, initScript, config);
+    await this.disconnect();
+    this.compatibilityMode = "oracle";
+    // Initialization belongs here, after the server's SQL dialect is known.
+    await super.connect(dsn, undefined, config);
     try {
       const version = await this.executeSQL("SELECT version() AS version", {});
       const mode = await this.executeSQL("SHOW database_mode", {});
@@ -75,6 +78,7 @@ export class KingbaseConnector extends PostgresConnector {
         );
       }
       this.compatibilityMode = mode.resultSets[0].rows[0].database_mode;
+      if (initScript?.trim()) await this.executeSQL(initScript, { readonly: config?.readonly });
       const schema = await this.executeSQL("SELECT current_schema() AS schema", {});
       this.defaultSchema = schema.resultSets[0].rows[0].schema ?? "public";
     } catch (error) {
