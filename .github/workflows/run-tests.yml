@@ -93,3 +93,38 @@ jobs:
 
       - name: Run integration tests
         run: pnpm test:integration
+
+  dm-regression:
+    name: DM8 real-instance regression
+    # Opt in only on a trusted runner with licensed official images preloaded.
+    # Never execute fork PR code on a self-hosted runner.
+    if: >-
+      vars.DM_REGRESSION_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    needs: unit-tests
+    runs-on: [self-hosted, dm8]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        image:
+          - dm8_single:dm8_20241022_rev244896_x86_rh6_64
+          - dm8:dm8_20250924_rev288894_HWarm_kylin10_64
+    steps:
+      - uses: actions/checkout@v3
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 10.17.1
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '22'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build:backend
+      - name: Verify modes, TLS, SSH, privileges, pool and built MCP
+        env:
+          DM_DOCKER_IMAGE: ${{ matrix.image }}
+          DM_TEST_BUILT: '1'
+          NODE_OPTIONS: --openssl-legacy-provider
+        run: pnpm exec tsx scripts/test-dm-regression.ts

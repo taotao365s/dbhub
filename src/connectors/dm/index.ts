@@ -36,6 +36,9 @@ interface DMConnectionConfig {
   schema?: string;
   tls: DMTLSConfig;
   poolMax: number;
+  password?: ConnectorConfig["password"];
+  timezone?: string;
+  compatibilityMode?: number;
 }
 
 export class DMDSNParser implements DSNParser {
@@ -60,7 +63,15 @@ export class DMDSNParser implements DSNParser {
     const params: Record<string, string> = {};
     url.forEachSearchParam((value, key) => {
       if (
-        !["schema", "sslmode", "sslrootcert", "sslcert", "sslkey", "sslservername"].includes(key)
+        ![
+          "schema",
+          "sslmode",
+          "sslrootcert",
+          "sslcert",
+          "sslkey",
+          "sslservername",
+          "compatible_mode",
+        ].includes(key)
       ) {
         throw new Error(`Unsupported DM DSN option '${key}'`);
       }
@@ -71,6 +82,27 @@ export class DMDSNParser implements DSNParser {
       quoteIdentifier(params.schema, "dm");
       schema = params.schema;
     }
+    if (config?.searchPath) {
+      if (config.searchPath.includes(","))
+        throw new Error("DM search_path accepts one schema only");
+      quoteIdentifier(config.searchPath, "dm");
+      if (schema && schema !== config.searchPath)
+        throw new Error("Conflicting DM schema and search_path");
+      schema = config.searchPath;
+    }
+    const timezone = config?.timezone === "Z" ? "+00:00" : config?.timezone;
+    if (
+      timezone &&
+      (!/^[+-]\d{2}:\d{2}$/.test(timezone) ||
+        Number(timezone.slice(1, 3)) > 14 ||
+        (timezone.startsWith("-") && Number(timezone.slice(1, 3)) > 12) ||
+        Number(timezone.slice(4)) > 59 ||
+        (Number(timezone.slice(1, 3)) === 14 && Number(timezone.slice(4)) !== 0))
+    ) {
+      throw new Error("DM timezone must be Z or a fixed offset between -12:59 and +14:00");
+    }
+    if (params.compatible_mode !== undefined && !/^[0-7]$/.test(params.compatible_mode))
+      throw new Error("DM compatible_mode must be an integer from 0 to 7");
     const mode = params.sslmode ?? "disable";
     if (!["disable", "require", "verify-ca", "verify-full"].includes(mode))
       throw new Error("Invalid DM sslmode");
@@ -90,17 +122,10 @@ export class DMDSNParser implements DSNParser {
       ca: readTLSFile(params.sslrootcert),
       cert: readTLSFile(params.sslcert),
       key: readTLSFile(params.sslkey),
+      paths: { ca: params.sslrootcert, cert: params.sslcert, key: params.sslkey },
     };
-    if (
-      config?.password ||
-      config?.searchPath ||
-      config?.timezone ||
-      config?.charset ||
-      config?.collation
-    ) {
-      throw new Error(
-        "DM does not support password callbacks, search_path, timezone, charset or collation options"
-      );
+    if (config?.charset || config?.collation) {
+      throw new Error("DM does not support per-connection charset or collation options");
     }
     const poolMax = config?.poolMaxConnections ?? 4;
     if (!Number.isInteger(poolMax) || poolMax < 1 || poolMax > 1000)
@@ -109,6 +134,10 @@ export class DMDSNParser implements DSNParser {
       schema,
       tls,
       poolMax,
+      password: config?.password,
+      timezone,
+      compatibilityMode:
+        params.compatible_mode === undefined ? undefined : Number(params.compatible_mode),
       connection: {
         connectString: `${url.hostname}:${url.port || 5236}`,
         user: url.username,
@@ -116,7 +145,7 @@ export class DMDSNParser implements DSNParser {
         connectTimeout: (config?.connectionTimeoutSeconds ?? 10) * 1000,
         // An execution deadline below owns cancellation and session disposal.
         socketTimeout: 0,
-        sessionTimeout: config?.queryTimeoutSeconds ?? 0,
+        sessionTimeout: 0,
       },
     };
   }
@@ -130,6 +159,7 @@ export class DMConnector implements Connector {
   private sourceId = "default";
   private parsed?: DMConnectionConfig;
   private pool?: DMSessionPool;
+  private cancelPool?: DMSessionPool;
   private defaultSchema = "";
   private readonly = false;
   private queryTimeoutMs = 0;
@@ -159,7 +189,12 @@ export class DMConnector implements Connector {
     this.pool = new DMSessionPool({
       max: parsed.poolMax,
       waitMs: parsed.connection.connectTimeout ?? 10000,
-      create: () => openDMSession(parsed.connection, parsed.tls),
+      create: () => this.createSession(parsed, parsed.connection.connectTimeout ?? 10000),
+    });
+    this.cancelPool = new DMSessionPool({
+      max: 1,
+      waitMs: 2000,
+      create: () => this.createSession(parsed, 2000),
     });
     this.readonly = config?.readonly ?? false;
     this.queryTimeoutMs = (config?.queryTimeoutSeconds ?? 0) * 1000;
@@ -168,10 +203,26 @@ export class DMConnector implements Connector {
         "SELECT SF_GET_SCHEMA_NAME_BY_ID(CURRENT_SCHID()) AS NAME FROM DUAL"
       );
       this.defaultSchema = rows[0].NAME;
-      const mode = await this.query<{ MODE: number }>(
-        "SELECT SF_GET_PARA_VALUE(2, 'COMPATIBLE_MODE') AS MODE FROM DUAL"
-      );
-      this.compatibilityMode = Number(mode[0].MODE);
+      try {
+        const mode = await this.query<{ MODE: string }>(
+          "SELECT PARA_VALUE AS MODE FROM V$DM_INI WHERE PARA_NAME='COMPATIBLE_MODE'"
+        );
+        this.compatibilityMode = Number(mode[0].MODE);
+        if (
+          parsed.compatibilityMode !== undefined &&
+          parsed.compatibilityMode !== this.compatibilityMode
+        )
+          throw new Error("DM compatible_mode differs from the server configuration");
+      } catch (error) {
+        if (![-5504, -551, -550, -5730].includes((error as { errCode?: number }).errCode ?? 0))
+          throw error;
+        if (parsed.compatibilityMode === undefined)
+          throw new Error(
+            "DM mode detection requires SELECT on SYS.V$DM_INI; alternatively set compatible_mode=0..7 in the DSN to the administrator-confirmed server mode",
+            { cause: error }
+          );
+        this.compatibilityMode = parsed.compatibilityMode;
+      }
       if (initScript) await this.executeSQL(initScript, {});
     } catch (error) {
       await this.disconnect();
@@ -180,11 +231,39 @@ export class DMConnector implements Connector {
   }
 
   async disconnect(): Promise<void> {
+    this.cancelPool?.close();
+    this.cancelPool = undefined;
     this.pool?.close();
     this.pool = undefined;
     this.parsed = undefined;
     this.defaultSchema = "";
     this.compatibilityMode = 0;
+  }
+
+  private async createSession(parsed: DMConnectionConfig, timeoutMs: number): Promise<DMSession> {
+    const start = Date.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const password = parsed.password
+        ? await Promise.race([
+            parsed.password(),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error("DM password callback timed out")),
+                timeoutMs
+              );
+            }),
+          ])
+        : parsed.connection.password;
+      const remaining = timeoutMs - (Date.now() - start);
+      if (remaining <= 0) throw new Error("DM connection setup timed out");
+      return await openDMSession(
+        { ...parsed.connection, password, connectTimeout: remaining },
+        parsed.tls
+      );
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private async acquire(): Promise<DMSession> {
@@ -196,6 +275,10 @@ export class DMConnector implements Connector {
       try {
         if (parsed.schema) {
           await connection.execute(`SET SCHEMA ${quoteIdentifier(parsed.schema, "dm")}`);
+          await connection.rollback();
+        }
+        if (parsed.timezone) {
+          await connection.execute(`SET TIME ZONE '${parsed.timezone}'`);
           await connection.rollback();
         }
         return connection;
@@ -272,9 +355,9 @@ export class DMConnector implements Connector {
     let succeeded = false;
     let aborted = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    // dmdb has no public cancel API. With the pinned driver, destroying this
-    // operation's private socket stops client waiting; server cleanup is asynchronous.
-    // Never return the session to a pool or send ROLLBACK on the dead socket.
+    // dmdb has no public cancel API. A bounded control connection requests server
+    // cancellation before this operation's socket is discarded. Never reuse an
+    // aborted session or issue rollback concurrently with its in-flight command.
     const operation = async (): Promise<SQLResult> => {
       try {
         if (readonly && !explaining)
@@ -340,28 +423,80 @@ export class DMConnector implements Connector {
         if (!aborted) await closeQuietly(() => connection.rollback());
         throw error;
       } finally {
-        pool.release(connection, succeeded && !!readonly && !aborted);
+        // Keep a timed-out session alive until its cancellation finishes, so its
+        // session ID cannot be recycled while the control request is in flight.
+        if (!aborted) pool.release(connection, succeeded && !!readonly);
       }
     };
     try {
       if (!this.queryTimeoutMs) return await operation();
       return await Promise.race([
-        operation(),
+        operation().then(
+          (result) => (aborted ? new Promise<never>(() => {}) : result),
+          (error) => {
+            if (aborted) return new Promise<never>(() => {});
+            throw error;
+          }
+        ),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
             aborted = true;
-            destroyDMSession(connection);
-            pool.release(connection, false);
-            reject(
-              Object.assign(new Error("DM query execution timed out; its session was closed"), {
-                code: "QUERY_TIMEOUT",
-              })
-            );
+            void this.cancelOperation(connection).then((cancelled) => {
+              destroyDMSession(connection);
+              pool.release(connection, false);
+              reject(
+                Object.assign(
+                  new Error(
+                    "DM query execution timed out; its session was closed" +
+                      (cancelled
+                        ? "; server cancellation requested"
+                        : "; server cancellation unavailable")
+                  ),
+                  { code: "QUERY_TIMEOUT", cancellationRequested: cancelled }
+                )
+              );
+            });
           }, this.queryTimeoutMs);
         }),
       ]);
     } finally {
       if (timer) clearTimeout(timer);
+    }
+  }
+
+  private async cancelOperation(target: DMSession): Promise<boolean> {
+    const pool = this.cancelPool;
+    if (!pool || target.closed || target.sessionID < 0n) return false;
+    let control: DMSession | undefined;
+    let expired = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cancel = async () => {
+      control = await pool.acquire();
+      if (expired) {
+        pool.release(control, false);
+        return false;
+      }
+      await control.execute("CALL SP_CANCEL_SESSION_OPERATION(?)", [target.sessionID.toString()]);
+      return true;
+    };
+    try {
+      return await Promise.race([
+        cancel(),
+        new Promise<false>((resolve) => {
+          timer = setTimeout(() => {
+            expired = true;
+            resolve(false);
+          }, 2000);
+        }),
+      ]);
+    } catch {
+      // Cancellation may require a privilege unavailable to the application user.
+      // Never hide the original timeout or grant privileges automatically.
+      return false;
+    } finally {
+      expired = true;
+      if (timer) clearTimeout(timer);
+      if (control) pool.release(control, false);
     }
   }
 
@@ -391,7 +526,8 @@ export class DMConnector implements Connector {
         "DM session durations are unavailable; counts reflect the current user's catalog visibility."
       );
     } catch (error) {
-      if (![-551, -550, -2106].includes((error as { errCode?: number }).errCode ?? 0)) throw error;
+      if (![-551, -550, -5504, -2106, -5730].includes((error as { errCode?: number }).errCode ?? 0))
+        throw error;
       notes.push("DM session metrics unavailable: grant access to V$SESSIONS and V$DM_INI.");
     }
     try {
@@ -407,7 +543,8 @@ export class DMConnector implements Connector {
         hitRatioPct: computeHitRatioPct(logical + physical, physical),
       };
     } catch (error) {
-      if (![-551, -550, -2106].includes((error as { errCode?: number }).errCode ?? 0)) throw error;
+      if (![-551, -550, -5504, -2106, -5730].includes((error as { errCode?: number }).errCode ?? 0))
+        throw error;
       notes.push("DM buffer metrics unavailable: grant access to V$BUFFERPOOL.");
     }
     if (notes.length) result.notes = notes;

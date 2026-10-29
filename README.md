@@ -108,7 +108,14 @@ DM connects to an **instance**, so omit the database path. Select an exact,
 case-sensitive schema using `?schema=APP`; without it the login's current schema
 is used. Percent-encode credentials and schema names. Structured TOML parameters
 use `type = "dm"`, `host`, `port` (default `5236`), `user`, and `password`;
-omit `database`. For a non-default schema use the DSN form.
+omit `database`. A non-default schema can use DSN `schema=APP` or TOML
+`search_path = "APP"` (one schema only; conflicting settings are rejected).
+`timezone` accepts `Z` or a fixed offset from `-12:59` to `+14:00`, applied
+on every checkout. It does not accept IANA zone names or `local`.
+SDK password callbacks are resolved afresh for each physical connection with
+a bounded deadline. Per-connection `charset` and `collation` remain rejected:
+DM database character-set/collation semantics cannot safely inherit the
+MySQL connection options.
 Environment variables support `DB_TYPE=dm` without `DB_NAME`.
 
 Build this checkout and run `node dist/index.js --config /path/to/dbhub.toml`.
@@ -130,7 +137,9 @@ sslkey = "/absolute/path/client-key.pem"
 pool_max_connections = 4
 ```
 
-The same TLS fields can be placed in the DSN query string. `verify-full`
+The same TLS fields can be placed in the DSN query string. Certificate files
+are reloaded on each new physical connection, including `~/` paths. Existing
+TLS sessions keep their negotiated identity until replaced. `verify-full`
 validates the CA chain and hostname; `verify-ca` checks the chain only;
 `require` encrypts without authenticating the server certificate.
 Verified modes require `sslrootcert`. Client certificate/key must be supplied
@@ -147,6 +156,9 @@ bounded by `connection_timeout`; at most 500 requests may wait. Successful
 read-only sessions are rolled back and reused. Writable, failed and timed-out
 sessions are discarded; this prevents write/session settings from leaking
 to later calls. Disconnect rejects waiters and closes active/idle sockets.
+Timeout cancellation uses a separate pool of at most one control connection
+per source, beyond `pool_max_connections`, so a full query pool cannot deadlock
+cancellation. Its connection, queue and command deadline is two seconds.
 Session settings and temporary objects are not a cross-call contract;
 `init_script` runs once, not on every pooled session.
 
@@ -167,11 +179,16 @@ counters. Missing catalog privileges produce explicit notes per unavailable
 section. Session durations are returned as null, not inferred from idle times.
 
 `query_timeout` bounds the whole execution after connection setup, including
-fetching and transaction completion. On expiry the private socket is destroyed
-and discarded. Server cleanup is asynchronous, so this is not a strict
-server-side deadline. A timeout does not prove a preceding write failed to
-commit; do not blindly retry writes. The transport hooks and deferred
-per-column conversion depend on the pinned driver and are covered by real
+fetching and transaction completion. On expiry DBHub requests
+`SP_CANCEL_SESSION_OPERATION` on the operation's own session through the control
+connection, then destroys/discards the original socket. The original session
+is held until the request finishes to prevent reuse of its ID by a later call.
+Cleanup can add up to two seconds to the reported timeout. A timeout error
+states whether cancellation was requested or unavailable (for example, missing
+privileges or a network failure). No privileges are granted automatically.
+Cancellation is best effort, not a promise that a preceding write failed to
+commit or that the server stopped instantaneously; do not blindly retry writes.
+The transport hooks and deferred per-column conversion depend on the pinned driver and are covered by real
 integration tests.
 
 Verified on macOS/OrbStack with these official images:
@@ -188,21 +205,28 @@ after restarting each isolated instance and runs the same connector/tool suite.
 Mode 5 means **DM8's DM6 compatibility setting**, not a tested DM6 server.
 Other server builds, DM7, and newer mode values are not implied by this matrix.
 
-Validation covered 20 connector/tool checks in each of the 16 version/mode
-combinations (320 passing checks), plus four pool lifecycle checks on each
-build. Seven TLS checks ran against the 2024 amd64 server, including invalid
-CA/hostname and plaintext-downgrade rejection. Built MCP smoke tests passed
-against the 2024 server over TLS in mode 3 and the 2025 ARM server in mode 4.
+The checked-in regression runner repeats the connector/tool and pool suites
+on both builds, including minimally privileged users and explicit cancellation,
+and verifies mutual TLS, certificate rotation, downgrade rejection and SSH
+forwarding. Coverage is recorded by its test output rather than implying
+support for untested server builds.
 
-DBHub detects the active mode on connection. Mode 4 enables backtick identifiers;
+DBHub detects the active mode on connection using `SYS.V$DM_INI`. A restricted
+account needs SELECT on that view, or an administrator-confirmed DSN
+`compatible_mode=0..7`. Explicit mode is checked against the server whenever
+the view is readable; mismatches are rejected. Without either, connection
+fails with an actionable error rather than guessing a SQL dialect.
+Low-privilege health checks return notes for inaccessible views.
+Mode 4 enables backtick identifiers;
 mode 3 enables bracket identifiers. All modes keep native DM `?` bindings.
 DM's MySQL mode does not imply MySQL's `#` comments, and PostgreSQL mode does
 not imply PostgreSQL's dollar-quoted strings. Tests cover common operations and
 mode-aware identifiers/binding; this is not certification of every vendor SQL
 feature or every DM parameter combination.
 
-Real-instance tests create/remove a unique schema. Supply `DM_TEST_DSN` for a
-disposable instance/user with schema DDL rights; optionally use
+Real-instance tests create/remove unique schemas and a restricted test user.
+Supply `DM_TEST_DSN` for a disposable instance with schema/user DDL and privilege
+grant rights (the regression runner uses its own SYSDBA account); optionally use
 `DM_EXPECT_MODE` to assert the active compatibility parameter:
 
 ```sh
@@ -217,6 +241,27 @@ TLS tests use `DM_TLS_TEST_DSN` (verify-full plus certificate paths),
 ```sh
 NODE_OPTIONS=--openssl-legacy-provider pnpm exec vitest run --project integration src/connectors/__tests__/dm-tls.integration.test.ts
 ```
+
+To reproduce the full mode/TLS/SSH matrix on an already loaded official image:
+
+```sh
+DM_DOCKER_IMAGE=dm8:dm8_20250924_rev288894_HWarm_kylin10_64 \
+NODE_OPTIONS=--openssl-legacy-provider \
+pnpm exec tsx scripts/test-dm-regression.ts
+```
+
+The runner requires Docker, OpenSSL and installed dependencies. It creates only
+uniquely named, labeled containers with loopback ports, random credentials and
+short-lived test certificates, and removes them on completion/failure.
+It never pulls or removes images. `DM_TEST_MODES=0,4` narrows the default 0–7
+matrix; `DM_TEST_BUILT=1` also runs the built MCP smoke test (build first).
+
+The CI workflow includes an opt-in DM job. Enable repository variable
+`DM_REGRESSION_ENABLED=true` and provision a trusted self-hosted runner labeled
+`dm8` with both listed images and the ability to run both architectures.
+It runs for same-repository PRs and manual dispatch, never fork PRs. Without
+that runner/variable, this job is disabled; ordinary integration runs still
+skip externally configured DM suites if their DSNs are absent.
 
 ### KingbaseES V8
 

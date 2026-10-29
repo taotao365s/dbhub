@@ -13,7 +13,7 @@ import { createCustomToolHandler } from "../../tools/custom-tool-handler.js";
 import { createExplainSqlToolHandler } from "../../tools/explain-sql.js";
 import { classifyConnectionError } from "../../utils/error-classifier.js";
 
-// Opt-in real DM8. Only a unique test schema is created and removed.
+// Opt-in real DM8. Unique fixture schemas/users are created and removed.
 describe.skipIf(!process.env.DM_TEST_DSN)("DM8 integration", () => {
   const dsn = process.env.DM_TEST_DSN!;
   const schema = "DBHUB_IT_" + randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase();
@@ -305,12 +305,12 @@ parameters = [{ name = "id", type = "integer", description = "Item ID" }]
           "SELECT /* DBHUB_TIMEOUT_PROBE */ COUNT(*) FROM SYSOBJECTS a, SYSOBJECTS b, SYSOBJECTS c WHERE MOD(a.ID+b.ID+c.ID,7)=0",
           { readonly: true }
         )
-      ).rejects.toThrow();
+      ).rejects.toMatchObject({ code: "QUERY_TIMEOUT", cancellationRequested: true });
       expect(Date.now() - start).toBeLessThan(6000);
       expect((await timed.executeSQL("SELECT 1 AS N FROM DUAL", {})).resultSets[0].rows).toEqual([
         { N: 1 },
       ]);
-      // Assert that closing the client also released the expensive server query.
+      // Assert the explicit cancellation released the expensive server query.
       await expect
         .poll(
           async () => {
@@ -345,6 +345,85 @@ parameters = [{ name = "id", type = "integer", description = "Item ID" }]
     }
   });
 
+  it("applies a fixed timezone, one schema and fresh password callbacks", async () => {
+    const configured = new DMConnector();
+    let passwords = 0;
+    try {
+      await configured.connect(dsn, undefined, {
+        timezone: "+05:30",
+        searchPath: schema,
+        password: async () => {
+          passwords++;
+          return decodeURIComponent(new URL(dsn).password);
+        },
+      });
+      for (let i = 0; i < 2; i++) {
+        const result = await configured.executeSQL(
+          "SELECT SESSIONTIMEZONE AS TZ, SF_GET_SCHEMA_NAME_BY_ID(CURRENT_SCHID()) AS SCH FROM DUAL",
+          {}
+        );
+        expect(result.resultSets[0].rows[0]).toEqual({ TZ: "+05:30", SCH: schema });
+      }
+      expect(passwords).toBeGreaterThanOrEqual(2);
+      const parser = new DMDSNParser();
+      await expect(parser.parse(dsn, { searchPath: "A,B" })).rejects.toThrow("one schema");
+      await expect(parser.parse(dsn, { timezone: "+99:00" })).rejects.toThrow("timezone");
+      await expect(parser.parse(dsn, { timezone: "-13:00" })).rejects.toThrow("timezone");
+      const stalled = new DMConnector();
+      try {
+        await expect(
+          stalled.connect(dsn, undefined, {
+            connectionTimeoutSeconds: 1,
+            password: () => new Promise(() => {}),
+          })
+        ).rejects.toThrow(/timed out/);
+        await stalled.connect(dsn);
+      } finally {
+        await stalled.disconnect();
+      }
+    } finally {
+      await configured.disconnect();
+    }
+  });
+  it("reports health honestly for a minimally privileged user", async () => {
+    const username = schema + "_U";
+    const password = "Dbh_" + randomUUID().replace(/-/g, "");
+    const limited = new DMConnector();
+    let userCreated = false;
+    try {
+      await admin.executeSQL(`CREATE USER "${username}" IDENTIFIED BY "${password}"`, {});
+      userCreated = true;
+      await admin.executeSQL(`GRANT CREATE SESSION TO "${username}"`, {});
+      const url = new URL(dsn);
+      url.username = username;
+      url.password = password;
+      url.searchParams.delete("schema");
+      await expect(
+        limited.connect(url.toString(), undefined, { connectionTimeoutSeconds: 3 })
+      ).rejects.toThrow("compatible_mode");
+      const mode = await admin.executeSQL(
+        "SELECT SF_GET_PARA_VALUE(2, 'COMPATIBLE_MODE') AS N FROM DUAL",
+        {}
+      );
+      url.searchParams.set("compatible_mode", String(mode.resultSets[0].rows[0].N));
+      await limited.connect(url.toString(), undefined, { connectionTimeoutSeconds: 3 });
+      const health = await limited.getHealthCheck();
+      expect(health.notes?.length).toBeGreaterThan(0);
+      if (health.connections) {
+        expect(health.connections.longestActiveQuerySeconds).toBeNull();
+        expect(health.connections.longestIdleInTransactionSeconds).toBeNull();
+      }
+      expect(
+        health.connections || health.notes?.some((n) => n.includes("session metrics unavailable"))
+      ).toBeTruthy();
+      expect(
+        health.bufferCache || health.notes?.some((n) => n.includes("buffer metrics unavailable"))
+      ).toBeTruthy();
+    } finally {
+      await limited.disconnect();
+      if (userCreated) await admin.executeSQL(`DROP USER "${username}" CASCADE`, {});
+    }
+  });
   it("returns actual session and buffer metrics", async () => {
     const health = await connector.getHealthCheck();
     expect(health.connections?.maxConnections).toBeGreaterThan(0);

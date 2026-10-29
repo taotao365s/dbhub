@@ -160,12 +160,14 @@ export interface ConnectorConfig {
    * PostgreSQL search_path setting.
    * Comma-separated list of schema names (e.g., "myschema,public").
    * Sets the session search_path and uses the first schema as default for discovery methods.
+   * DM accepts a single exact schema name and applies SET SCHEMA on checkout.
    */
   searchPath?: string;
   /**
    * MySQL/MariaDB timezone setting.
    * Controls how the driver interprets DATETIME values: "Z" (UTC), "local", or "±HH:MM" (e.g., "+09:00").
    * Passed through to the mysql2 `timezone` connection option.
+   * DM accepts Z or a fixed offset and applies SET TIME ZONE on checkout.
    */
   timezone?: string;
   /**

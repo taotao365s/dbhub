@@ -1,5 +1,7 @@
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { isIP, type Socket } from "node:net";
 import { connect as connectTLS, type TLSSocket } from "node:tls";
 import dm from "dmdb";
@@ -10,6 +12,7 @@ export interface DMSession extends dm.Connection {
   tlsSocket?: TLSSocket;
   sslEncrypt: number;
   closed: boolean;
+  sessionID: bigint;
   access: { Zt: () => Promise<unknown> };
   once(event: string, listener: () => void): this;
   openConnection(group?: unknown): Promise<DMSession>;
@@ -24,6 +27,7 @@ export interface DMTLSConfig {
   ca?: Buffer;
   cert?: Buffer;
   key?: Buffer;
+  paths?: { ca?: string; cert?: string; key?: string };
 }
 
 const require = createRequire(import.meta.url);
@@ -38,7 +42,9 @@ const driver = dm as typeof dm & {
 };
 
 export function readTLSFile(path: string | undefined): Buffer | undefined {
-  return path ? readFileSync(path) : undefined;
+  return path
+    ? readFileSync(path.startsWith("~/") ? join(homedir(), path.slice(2)) : path)
+    : undefined;
 }
 
 /** Enforce TLS before the login packet, including plaintext downgrade rejection. */
@@ -46,6 +52,15 @@ export async function openDMSession(
   options: dm.ConnectionAttributes,
   tls: DMTLSConfig
 ): Promise<DMSession> {
+  // Each new physical connection observes rotated files; existing TLS sessions remain valid.
+  if (tls.paths) {
+    tls = {
+      ...tls,
+      ca: readTLSFile(tls.paths.ca),
+      cert: readTLSFile(tls.paths.cert),
+      key: readTLSFile(tls.paths.key),
+    };
+  }
   const properties = await driver.parseConnectionAttr(options);
   const connection = Connection.newInstanceOfConnection(properties);
   connection.startTLS = async (encrypted) => {

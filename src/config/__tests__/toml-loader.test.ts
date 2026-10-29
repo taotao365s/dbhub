@@ -432,7 +432,7 @@ pool_max_connections = ${value}
         ['aws_iam_auth', 'sqlserver', 'aws_iam_auth = true\naws_region = "eu-west-1"', 'only supported for postgres, mysql, and mariadb'],
         ['pool_max_connections', 'mysql', 'pool_max_connections = 5', "'pool_max_connections' but it is only supported for PostgreSQL"],
         ['search_path', 'mysql', 'search_path = "myschema"', "'search_path' but it is only supported for PostgreSQL"],
-        ['timezone', 'postgres', 'timezone = "+09:00"', "'timezone' but it is only supported for MySQL and MariaDB"],
+        ['timezone', 'postgres', 'timezone = "+09:00"', "'timezone' but it is only supported for MySQL, MariaDB and DM"],
         ['charset', 'postgres', 'charset = "utf8mb4"', "'charset' but it is only supported for MySQL and MariaDB"],
         ['collation', 'postgres', 'collation = "utf8mb4_0900_ai_ci"', "'collation' but it is only supported for MySQL and MariaDB"],
       ])('should reject %s for a %s source', (_field, type, extra, message) => {

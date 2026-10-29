@@ -731,11 +731,11 @@ function validateSourceConfig(source: SourceConfig, configPath: string): void {
     }
   }
 
-  // Validate search_path (PostgreSQL only)
+  // Validate search_path (PostgreSQL/Kingbase schema list, DM single schema).
   if (source.search_path !== undefined) {
-    if (source.type !== "postgres" && source.type !== "kingbase") {
+    if (source.type !== "postgres" && source.type !== "kingbase" && source.type !== "dm") {
       throw new Error(
-        `Configuration file ${configPath}: source '${source.id}' has 'search_path' but it is only supported for PostgreSQL and KingbaseES sources.`
+        `Configuration file ${configPath}: source '${source.id}' has 'search_path' but it is only supported for PostgreSQL, KingbaseES and DM sources.`
       );
     }
     if (typeof source.search_path !== "string" || source.search_path.trim().length === 0) {
@@ -747,11 +747,11 @@ function validateSourceConfig(source: SourceConfig, configPath: string): void {
 
   }
 
-  // Validate timezone (MySQL/MariaDB only)
+  // Validate timezone (DM further restricts this to Z or fixed offsets).
   if (source.timezone !== undefined) {
-    if (source.type !== "mysql" && source.type !== "mariadb") {
+    if (source.type !== "mysql" && source.type !== "mariadb" && source.type !== "dm") {
       throw new Error(
-        `Configuration file ${configPath}: source '${source.id}' has 'timezone' but it is only supported for MySQL and MariaDB sources.`
+        `Configuration file ${configPath}: source '${source.id}' has 'timezone' but it is only supported for MySQL, MariaDB and DM sources.`
       );
     }
     // Accepted by mysql2/mariadb drivers: "local", "Z", or "±HH:MM" (e.g., "+09:00").
